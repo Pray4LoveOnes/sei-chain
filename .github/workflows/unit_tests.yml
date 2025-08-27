@@ -80,10 +80,12 @@ jobs:
           gocovmerge $(find . -type f -name '*profile.out') > coverage.txt
 
       - name: Debug: coverage line count
-        run: wc -l coverage.txt || true
+        run: |
+          wc -l coverage.txt || true
 
       - name: Debug: list profile files
-        run: ls **/*profile.out || true
+        run: |
+          ls **/*profile.out || true
 
       - name: Upload merged coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -103,13 +105,10 @@ jobs:
           echo "🧪 Fetching job conclusions..."
           jobs=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs)
-
           echo "$jobs" | jq -r '.jobs[] | .name + ": " + (.conclusion // "null")' > job_statuses.txt
           cat job_statuses.txt
-
           if grep -q "failure" job_statuses.txt; then
             echo "❌ Some or all test jobs failed."
             exit 1
           fi
-
           echo "✅ All test jobs passed."
