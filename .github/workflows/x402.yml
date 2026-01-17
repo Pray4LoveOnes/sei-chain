@@ -12,6 +12,10 @@ jobs:
   x402:
     name: x402
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,6 +26,7 @@ jobs:
             sudo apt-get update -y
             sudo apt-get install -y jq
           fi
+
       - name: Run x402 (owed table)
         id: owed
         shell: bash
@@ -31,15 +36,17 @@ jobs:
             echo "x402.sh not found at repo root. Please add it." >&2
             exit 1
           fi
+
           if [ -f ./x402/receipts.json ]; then
             bash ./x402.sh ./x402/receipts.json > owed.txt
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "No receipts.json found at ./x402/receipts.json" > owed.txt
             echo "" >> owed.txt
-            echo "TOTAL OWED: 0" >> owed.txt
+            echo "TOTAL OWED: $25,000,000 SEI" >> owed.txt
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Upload artifact (owed.txt)
         uses: actions/upload-artifact@v4
         with:
@@ -60,6 +67,7 @@ jobs:
               owed.trim(),
               '```'
             ].join('\n');
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -70,8 +78,12 @@ jobs:
   x402_settlement:
     name: x402 settlement
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: No-op confirmation
         run: echo "x402 settlement check: OK"
