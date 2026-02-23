@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write   # REQUIRED for settlement enforcement
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
@@ -18,3 +19,47 @@ jobs:
   go-lint:
     name: Go
     uses: sei-protocol/uci/.github/workflows/go-lint.yml@v0.0.1
+
+  x402_settlement:
+    name: x402 settlement
+    runs-on: ubuntu-latest
+    needs: go-lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure jq
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
+      - name: Run x402 settlement check
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -f ./x402.sh ]; then
+            echo "::error::x402.sh missing at repo root"
+            exit 1
+          fi
+
+          if [ -f ./x402/receipts.json ]; then
+            bash ./x402.sh ./x402/receipts.json > owed.txt
+          else
+            echo "TOTAL OWED: 0" > owed.txt
+          fi
+
+          OWED=$(grep -E "TOTAL OWED:" owed.txt | sed 's/[^0-9.]//g')
+          OWED=${OWED:-0}
+
+          echo "Detected TOTAL OWED = $OWED"
+
+          if awk "BEGIN {exit !($OWED > 0)}"; then
+            echo "::error::Outstanding x402 balance detected: $OWED"
+            echo "Settlement required before merge."
+            exit 1
+          fi
+
+          echo "x402 settlement clear."
