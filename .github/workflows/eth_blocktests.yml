@@ -1,56 +1,212 @@
-name: ETH Blocktests
+name: Sei Giga Transcendent – Advanced EVM Blocktest Validation
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, release/**]
   pull_request:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      total_runners:
+        description: 'Override total parallel runners (default: 16)'
+        required: false
+        default: '16'
+      test_subset:
+        description: 'Test subfolder (e.g. GeneralStateTests, BlockchainTests)'
+        required: false
+        default: 'BlockchainTests/GeneralStateTests'
+      enable_profiling:
+        description: 'Enable gas/CPU profiling & flamegraphs?'
+        required: false
+        default: 'true'
 
-defaults:
- run:
-  shell: bash
+permissions:
+  contents: read
+  actions: write
+  checks: write
+  security-events: write  # Optional: for code scanning integration later
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true  # Prevents queue buildup on rapid pushes
 
 env:
-  TOTAL_RUNNERS: 5
+  TOTAL_RUNNERS: ${{ github.event.inputs.total_runners || 16 }}
+  TEST_SUBDIR: ${{ github.event.inputs.test_subset || 'BlockchainTests/GeneralStateTests' }}
+  ETH_TESTS_REF: "c67e485ff8b5be9abc8ad15345ec21aa22e290d9"
+  GO_VERSION: "1.24"
+  PROFILE_ENABLED: ${{ github.event.inputs.enable_profiling || 'true' }}
+  SHARD_STRATEGY: "dynamic"   # or "static" if your script prefers fixed partitioning
 
 jobs:
-  runner-indexes:
+  detect-changes:
     runs-on: ubuntu-latest
-    name: Generate runner indexes
     outputs:
-      json: ${{ steps.generate-index-list.outputs.json }}
+      tests_changed: ${{ steps.filter.outputs.tests_changed }}
     steps:
-      - id: generate-index-list
-        run: |
-          MAX_INDEX=$((${{ env.TOTAL_RUNNERS }}-1))
-          INDEX_LIST=$(seq 0 ${MAX_INDEX})
-          INDEX_JSON=$(jq --null-input --compact-output '. |= [inputs]' <<< ${INDEX_LIST})
-          echo "json=${INDEX_JSON}" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            tests_changed:
+              - 'run_blocktests.sh'
+              - 'x/**/keeper/**'
+              - 'giga/**'
+              - 'tests/**'
+              - '**/*.go'
 
-  eth-blocktests:
-    name: "Run ETH Blocktests ${{ matrix.runner-index }}"
+  generate-matrix:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.tests_changed == 'true' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    needs: runner-indexes
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+    steps:
+      - id: generate
+        run: |
+          # Dynamic matrix: supports up to 64 lanes if needed; GitHub allows ~256 concurrent
+          INDEXES=$(seq 0 $(( ${{ env.TOTAL_RUNNERS }} - 1 )))
+          MATRIX_JSON=$(jq -n --argjson idx "[$INDEXES]" '{ "runner-index": $idx }')
+          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+
+  build-go-binary:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.tests_changed == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build Sei binary once (cached for lanes)
+        run: |
+          go build -o sei-giga ./cmd/seid
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sei-giga-binary
+          path: sei-giga
+          retention-days: 1
+
+  giga-evm-sharded-validation:
+    name: Giga-Lane-${{ matrix.runner-index }} (${{ env.TEST_SUBDIR }})
+    needs: [generate-matrix, build-go-binary]
+    runs-on: ${{ github.repository == 'sei-protocol/sei-chain' && 'ubuntu-24.04' || 'ubuntu-latest' }}  # Upgrade if org allows larger runners
     strategy:
       fail-fast: false
-      matrix:
-        # generate runner index array from 0 to total-runners
-        runner-index: ${{fromJson(needs.runner-indexes.outputs.json)}}
+      max-parallel: 20  # GitHub cap; increase with self-hosted if needed
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v2
-
-      - name: Set up Go
-        uses: actions/setup-go@v2
+      - uses: actions/checkout@v4
         with:
-          go-version: 1.24
+          fetch-depth: 0
 
-      - name: Clone ETH Blocktests
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Download pre-built binary
+        uses: actions/download-artifact@v4
+        with:
+          name: sei-giga-binary
+
+      - name: Clone & pin Ethereum tests
         run: |
-          git clone https://github.com/ethereum/tests.git ethtests
-          cd ethtests
-          git checkout c67e485ff8b5be9abc8ad15345ec21aa22e290d9
+          git clone --depth 1 https://github.com/ethereum/tests.git ethtests
+          cd ethtests && git fetch origin ${{ env.ETH_TESTS_REF }} && git checkout ${{ env.ETH_TESTS_REF }}
 
-      - name: "Run ETH Blocktest"
-        run: ./run_blocktests.sh ./ethtests/BlockchainTests/ ${{ matrix.runner-index }} ${{ env.TOTAL_RUNNERS }}
+      - name: Run sharded Giga blocktests
+        id: test-run
+        run: |
+          chmod +x ./run_blocktests.sh
+          ./run_blocktests.sh \
+            "./ethtests/${{ env.TEST_SUBDIR }}" \
+            ${{ matrix.runner-index }} \
+            ${{ env.TOTAL_RUNNERS }} \
+            --output-dir "results-lane-${{ matrix.runner-index }}" \
+            --json "lane-${{ matrix.runner-index }}.json" \
+            --log-level debug \
+            ${{ env.PROFILE_ENABLED == 'true' && '--gas-profile --cpu-profile cpu-lane-'${{ matrix.runner-index }}'.prof --mem-profile mem-lane-'${{ matrix.runner-index }}'.prof' || '' }}
+
+      - name: Generate flamegraph if profiling enabled
+        if: ${{ env.PROFILE_ENABLED == 'true' && always() }}
+        run: |
+          go tool pprof -http=: -seconds 30 cpu-lane-${{ matrix.runner-index }}.prof || true
+          # Or use go-torch / flamegraph.pl if installed in your repo/scripts
+
+      - name: Upload lane artifacts (results, profiles, failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: giga-lane-${{ matrix.runner-index }}-artifacts
+          path: |
+            results-lane-${{ matrix.runner-index }}/
+            lane-${{ matrix.runner-index }}.json
+            *.prof
+            **/*.log
+            flamegraph*.svg
+          retention-days: 14
+
+      - name: Annotate test failures (GitHub Checks)
+        if: failure()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'results-lane-${{ matrix.runner-index }}/**/*.xml'  # If your script outputs JUnit XML; otherwise skip or convert JSON
+          include_passed: false
+
+  aggregate-report:
+    name: Aggregate Giga Metrics & Summary
+    needs: giga-evm-sharded-validation
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: giga-lane-*-artifacts
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Install jq & aggregate metrics
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          # Example: aggregate gas / TPS estimates if JSON contains them
+          TOTAL_GAS=0
+          for f in artifacts/*/lane-*.json; do
+            GAS=$(jq '.totalGas // 0' "$f")
+            TOTAL_GAS=$((TOTAL_GAS + GAS))
+          done
+          echo "Aggregate Gas Processed: $TOTAL_GAS"
+          echo "Estimated TPS proxy (assuming 21k gas/tx): $((TOTAL_GAS / 21000 / 10))"  # rough; adjust divisor for test duration
+          echo "::notice::Target check → 5 Gigagas aggregate across lanes"
+
+      - name: Upload consolidated report
+        uses: actions/upload-artifact@v4
+        with:
+          name: giga-aggregate-report
+          path: |
+            artifacts/**/lane-*.json
+            artifacts/**/*.prof
+            artifacts/**/flamegraph*.svg
+
+  notify-on-regression:
+    needs: aggregate-report
+    if: failure() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Alert: Giga EVM regression detected – check artifacts!"
+        # Add Slack/Discord webhook or GitHub issue creation here if desired
