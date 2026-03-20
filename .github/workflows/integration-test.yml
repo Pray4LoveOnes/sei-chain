@@ -7,18 +7,20 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  actions: write
 
 jobs:
   x402:
-    name: x402
+    name: x402 payment snapshot
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-            - name: Install Python and YAML tools
+      - name: Install Python and YAML tools
         run: |
-          pip3 install pyyaml
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyyaml
 
       - name: Ensure jq is installed
         run: |
@@ -28,54 +30,68 @@ jobs:
           fi
 
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.24
+          go-version: '1.24'
 
       - name: Start 4-node Docker cluster
         run: |
+          set -euo pipefail
           make clean
-          INVARIANT_CHECK_INTERVAL=10 ${{ matrix.test.env }} make docker-cluster-start &
+          # Start cluster in background
+          INVARIANT_CHECK_INTERVAL=10 make docker-cluster-start &
+          # Optional: wait for cluster to be ready (expand based on your make target logs/ports)
+          sleep 30  # adjust or replace with health check loop
+          echo "Docker cluster started"
 
-      - name: Run x402 (owed table)
+      - name: Run x402 owed calculation
         id: owed
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           if [ ! -f ./x402.sh ]; then
-            echo "x402.sh not found at repo root. Please add it." >&2
+            echo "Error: x402.sh not found in repository root" >&2
             exit 1
           fi
+
+          OUTPUT_FILE="owed.txt"
+
           if [ -f ./x402/receipts.json ]; then
-            bash ./x402.sh ./x402/receipts.json > owed.txt
+            bash ./x402.sh ./x402/receipts.json > "$OUTPUT_FILE"
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No receipts.json found at ./x402/receipts.json" > owed.txt
-            echo "" >> owed.txt
-            echo "TOTAL OWED: 0" >> owed.txt
+            {
+              echo "No receipts.json found at ./x402/receipts.json"
+              echo ""
+              echo "TOTAL OWED: 0"
+            } > "$OUTPUT_FILE"
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload artifact (owed.txt)
+      - name: Upload owed.txt artifact
         uses: actions/upload-artifact@v4
         with:
           name: x402-owed
           path: owed.txt
+          retention-days: 7
 
-      - name: Comment results on PR
+      - name: Comment results on pull request
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const owed = fs.readFileSync('owed.txt', 'utf8');
+            const owed = fs.readFileSync('owed.txt', 'utf8').trim();
+
             const banner = [
               '**x402 Payment Snapshot**',
               '_Authorship notice: x402 payment architecture originated from the reviewer’s team._',
               '',
-              '```',
-              owed.trim(),
+              '```text',
+              owed,
               '```'
             ].join('\n');
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -84,24 +100,33 @@ jobs:
             });
 
   x402_settlement:
-    name: x402 settlement
+    name: x402 settlement verification
     runs-on: ubuntu-latest
+    needs: x402
+    if: always()
     steps:
-      - name: Get workflow conclusion
-        id: workflow_conclusion
-        uses: nick-fields/retry@v2
+      - name: Check job conclusions
+        id: check
+        uses: nick-fields/retry@v3
         with:
-          max_attempts: 2
+          timeout_seconds: 60
+          max_attempts: 3
           retry_on: error
-          timeout_seconds: 30
           command: |
-            jobs=$(curl -s https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs)
-            job_statuses=$(echo "$jobs" | jq -r '.jobs[] | .conclusion')
+            set -euo pipefail
 
-            for status in $job_statuses; do
-              echo "Status: $status"
-              if [[ "$status" == "failure" ]]; then
-                echo "❌ Some or all tests have failed!"
+            RESPONSE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs)
+
+            CONCLUSIONS=$(echo "$RESPONSE" | jq -r '.jobs[] | select(.name == "x402 payment snapshot") | .conclusion')
+
+            if echo "$CONCLUSIONS" | grep -q -E "failure|cancelled"; then
+              echo "x402 snapshot job did not succeed (conclusion: $CONCLUSIONS)"
+              exit 1
+            fi
+
+            echo "x402 snapshot job succeeded"                echo "❌ Some or all tests have failed!"
                 exit 1
               fi
               if [[ "$status" == "cancelled" ]]; then
