@@ -256,3 +256,59 @@ func TestContext_Priority(t *testing.T) {
 	requirePriority(t, deprioritisedSubject, 0)
 	requireNoPriority(t, subject)
 }
+
+func TestContext_EVMAndTracingAccessors(t *testing.T) {
+	var (
+		pendingChecker abci.PendingTxChecker = func(_ context.Context, _ *abci.RequestCheckTx) error { return nil }
+		checkCalls     []int64
+		deliverCalls   []types.Context
+		expireCalls    int
+	)
+
+	traceCtx := context.WithValue(context.Background(), "trace", "span") //nolint:golint,staticcheck
+	txSum := [32]byte{1, 2, 3, 4}
+
+	ctx := types.NewContext(nil, tmproto.Header{}, false, nil).
+		WithTxSum(txSum).
+		WithGasEstimate(123).
+		WithTraceSpanContext(traceCtx).
+		WithEVMSenderAddress("sei1sender").
+		WithEVMNonce(7).
+		WithIsEVM(true).
+		WithEVMTxHash("0xabc").
+		WithEVMVMError("boom").
+		WithEVMEntryViaWasmdPrecompile(true).
+		WithEVMPrecompileCalledFromDelegateCall(true).
+		WithPendingTxChecker(pendingChecker).
+		WithCheckTxCallback(func(priority int64) { checkCalls = append(checkCalls, priority) }).
+		WithDeliverTxCallback(func(deliverCtx types.Context) { deliverCalls = append(deliverCalls, deliverCtx) }).
+		WithExpireTxHandler(func() { expireCalls++ }).
+		WithMessageIndex(9).
+		WithTxIndex(11).
+		WithIsTracing(true)
+
+	require.Equal(t, txSum, ctx.TxSum())
+	require.Equal(t, uint64(123), ctx.GasEstimate())
+	require.Equal(t, traceCtx, ctx.TraceSpanContext())
+	require.Equal(t, "sei1sender", ctx.EVMSenderAddress())
+	require.Equal(t, uint64(7), ctx.EVMNonce())
+	require.True(t, ctx.IsEVM())
+	require.Equal(t, "0xabc", ctx.EVMTxHash())
+	require.Equal(t, "boom", ctx.EVMVMError())
+	require.True(t, ctx.EVMEntryViaWasmdPrecompile())
+	require.True(t, ctx.EVMPrecompileCalledFromDelegateCall())
+	require.NotNil(t, ctx.PendingTxChecker())
+	require.Equal(t, 9, ctx.MessageIndex())
+	require.Equal(t, 11, ctx.TxIndex())
+	require.True(t, ctx.IsTracing())
+	require.NotNil(t, ctx.StoreTracer())
+
+	ctx.CheckTxCallback()(42)
+	ctx.DeliverTxCallback()(ctx)
+	ctx.ExpireTxHandler()()
+
+	require.Equal(t, []int64{42}, checkCalls)
+	require.Len(t, deliverCalls, 1)
+	require.Equal(t, ctx.TxIndex(), deliverCalls[0].TxIndex())
+	require.Equal(t, 1, expireCalls)
+}
