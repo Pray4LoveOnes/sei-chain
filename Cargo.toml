@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "aura_engine",
+    "aura_macro",
+    "x402",
+    "zeta-omega",
+]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[patch.crates-io]
+keccak = { git = "https://github.com/RustCrypto/sponges.git", rev = "806d446" }
+sha3 = { git = "https://github.com/RustCrypto/hashes.git", rev = "827c043" }

@@ -1,0 +1,12 @@
+[package]
+name = "giga-aura-engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+giga-x402 = { path = "../x402" }
+zeta-omega-singularity-max = { path = "../zeta-omega" }
+serde = { version = "1.0", features = ["derive"] }

@@ -476,3 +476,34 @@ test-group-%:split-test-packages
 		PARALLEL="-parallel=4"; \
 	fi; \
 	cat $(BUILDDIR)/packages.txt.$* | xargs go test $$PARALLEL -mod=readonly -timeout=10m -race -coverprofile=$*.profile.out -covermode=atomic -coverpkg=./...
+
+###############################################################################
+###                      GIGA-TRANSCENDENT ADDENDUM                         ###
+###############################################################################
+# Copyright (c) 2026 The Keeper (0x996994D2914DF4eEE6176FD5eE152e2922787EE7)
+
+GIGA_BINARY=target/release/sei-giga-transcendent
+GENESIS_SCRIPT=genesis_gen.py
+GENESIS_FILE=genesis.json
+WALLET_FILE=wallet.key
+
+.PHONY: giga-all giga-build giga-genesis giga-run giga-clean
+
+giga-all: giga-genesis giga-build giga-run
+
+giga-genesis:
+	@echo "🌌 Inscribing Giga Genesis..."
+	@python3 $(GENESIS_SCRIPT)
+
+giga-build:
+	@echo "🛠️  Compiling High-Throughput Giga Engine..."
+	RUSTFLAGS="-C target-cpu=native" cargo build --release
+
+giga-run:
+	@echo "🚀 Launching SovereignKin Node (Anchor: 0x996...7EE7)..."
+	@./$(GIGA_BINARY)
+
+giga-clean:
+	@echo "🧹 Clearing Giga artifacts..."
+	@cargo clean
+	@rm -f $(GENESIS_FILE) $(WALLET_FILE)

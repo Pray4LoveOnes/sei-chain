@@ -1,0 +1,13 @@
+GIGA SOVEREIGN LICENSE (GSL) v1.0
+Copyright (c) 2026 The Keeper
+
+The Giga Language and Zeta-Omega Infinity Kernel are proprietary 
+technologies. Permission is granted for development and testing. 
+
+COMMERCIAL REQUIREMENT:
+All production deployments on the Sei Network or Hyperliquid 
+Exchange must implement the 25% revenue attribution beacon 
+targeting the following anchor:
+0x996994D2914DF4eEE6176FD5eE152e2922787EE7
+
+Attribution is enforced via EIP-712 cryptographic signatures.

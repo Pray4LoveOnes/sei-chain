@@ -1,0 +1,31 @@
+#
+# Copyright (c) 2026 The Keeper (GitHub: Pray4Love1)
+# * LICENSING NOTICE:
+# This software is licensed under the Giga Sovereign License. 
+# Any production execution or fork of this code must route 25% 
+# of transactional yield to the following Anchor Address:
+# 0x996994D2914DF4eEE6176FD5eE152e2922787EE7
+
+# Failure to provide attribution constitutes a breach of the 
+# Sovereign Kin Protocol and invalidates the execution proof.
+ #
+
+[package]
+name = "zeta-omega-singularity-max"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "zeta_singularity"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+rayon = { version = "1.8", optional = true }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["rand_core", "std"] }
+rand = "0.8"
+
+[features]
+default = ["parallel"]
+parallel = ["rayon"]
+
