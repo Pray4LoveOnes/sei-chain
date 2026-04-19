@@ -129,10 +129,16 @@ func (s *CompositeStateStore) Has(storeKey string, version int64, key []byte) (b
 }
 
 func (s *CompositeStateStore) Iterator(storeKey string, version int64, start, end []byte) (types.DBIterator, error) {
+	if s.evmStore != nil && s.config.ReadMode != config.CosmosOnlyRead && storeKey == evm.EVMStoreKey {
+		return s.evmStore.Iterator(storeKey, version, start, end)
+	}
 	return s.cosmosStore.Iterator(storeKey, version, start, end)
 }
 
 func (s *CompositeStateStore) ReverseIterator(storeKey string, version int64, start, end []byte) (types.DBIterator, error) {
+	if s.evmStore != nil && s.config.ReadMode != config.CosmosOnlyRead && storeKey == evm.EVMStoreKey {
+		return s.evmStore.ReverseIterator(storeKey, version, start, end)
+	}
 	return s.cosmosStore.ReverseIterator(storeKey, version, start, end)
 }
 
@@ -336,6 +342,7 @@ func convertFlatKVNodes(node types.SnapshotNode) ([]types.SnapshotNode, error) {
 
 func (s *CompositeStateStore) Import(version int64, ch <-chan types.SnapshotNode) error {
 	importToEVM := s.evmStore != nil && s.config.WriteMode != config.CosmosOnlyWrite
+	splitWrite := s.config.WriteMode == config.SplitWrite
 
 	cosmosCh := make(chan types.SnapshotNode, 100)
 	var evmCh chan types.SnapshotNode
@@ -398,12 +405,17 @@ func (s *CompositeStateStore) Import(version int64, ch <-chan types.SnapshotNode
 		}
 
 		for _, n := range nodes {
-			if n.StoreKey == evm.EVMStoreKey && importToEVM {
-				if !send(evmCh, n) {
+			isEVM := n.StoreKey == evm.EVMStoreKey
+			// cosmos receives every non-evm node and, under non-SplitWrite modes,
+			// also receives evm nodes so DualWrite state-synced nodes have the
+			// same cosmos-side fallback coverage as block-processed DualWrite.
+			if !isEVM || !splitWrite {
+				if !send(cosmosCh, n) {
 					break
 				}
-			} else {
-				if !send(cosmosCh, n) {
+			}
+			if isEVM && importToEVM {
+				if !send(evmCh, n) {
 					break
 				}
 			}

@@ -27,14 +27,9 @@ import (
 func MigrateERCNativePointers(ctx sdk.Context, k *keeper.Keeper) error {
 	iter := prefix.NewStore(ctx.KVStore(k.GetStoreKey()), append(types.PointerRegistryPrefix, types.PointerERC20NativePrefix...)).ReverseIterator(nil, nil)
 	defer func() { _ = iter.Close() }()
-	seen := map[string]struct{}{}
 	for ; iter.Valid(); iter.Next() {
-		token := string(iter.Key()[:len(iter.Key())-2]) // last two bytes are version
-		if _, ok := seen[token]; ok {
-			continue
-		}
-		seen[token] = struct{}{}
-		addr := common.BytesToAddress(iter.Value())
+		token := string(iter.Key())
+		addr := common.BytesToAddress(iter.Value()[2:])
 		oName, err := k.QueryERCSingleOutput(ctx, "native", addr, "name")
 		if err != nil {
 			logger.Error("Failed to upgrade pointer for token due to failed name query", "token", token, "err", err)
@@ -67,14 +62,9 @@ func MigrateERCNativePointers(ctx sdk.Context, k *keeper.Keeper) error {
 func MigrateERCCW20Pointers(ctx sdk.Context, k *keeper.Keeper) error {
 	iter := prefix.NewStore(ctx.KVStore(k.GetStoreKey()), append(types.PointerRegistryPrefix, types.PointerERC20CW20Prefix...)).ReverseIterator(nil, nil)
 	defer func() { _ = iter.Close() }()
-	seen := map[string]struct{}{}
 	for ; iter.Valid(); iter.Next() {
-		cwAddr := string(iter.Key()[:len(iter.Key())-2]) // last two bytes are version
-		if _, ok := seen[cwAddr]; ok {
-			continue
-		}
-		seen[cwAddr] = struct{}{}
-		addr := common.BytesToAddress(iter.Value())
+		cwAddr := string(iter.Key())
+		addr := common.BytesToAddress(iter.Value()[2:])
 		oName, err := k.QueryERCSingleOutput(ctx, "cw20", addr, "name")
 		if err != nil {
 			logger.Error("Failed to upgrade pointer due to failed name query", "pointer", cwAddr, "err", err)
@@ -101,14 +91,9 @@ func MigrateERCCW20Pointers(ctx sdk.Context, k *keeper.Keeper) error {
 func MigrateERCCW721Pointers(ctx sdk.Context, k *keeper.Keeper) error {
 	iter := prefix.NewStore(ctx.KVStore(k.GetStoreKey()), append(types.PointerRegistryPrefix, types.PointerERC721CW721Prefix...)).ReverseIterator(nil, nil)
 	defer func() { _ = iter.Close() }()
-	seen := map[string]struct{}{}
 	for ; iter.Valid(); iter.Next() {
-		cwAddr := string(iter.Key()[:len(iter.Key())-2]) // last two bytes are version
-		if _, ok := seen[cwAddr]; ok {
-			continue
-		}
-		seen[cwAddr] = struct{}{}
-		addr := common.BytesToAddress(iter.Value())
+		cwAddr := string(iter.Key())
+		addr := common.BytesToAddress(iter.Value()[2:])
 		oName, err := k.QueryERCSingleOutput(ctx, "cw721", addr, "name")
 		if err != nil {
 			logger.Error("Failed to upgrade pointer due to failed name query", "pointer", cwAddr, "err", err)
@@ -135,14 +120,9 @@ func MigrateERCCW721Pointers(ctx sdk.Context, k *keeper.Keeper) error {
 func MigrateERCCW1155Pointers(ctx sdk.Context, k *keeper.Keeper) error {
 	iter := prefix.NewStore(ctx.KVStore(k.GetStoreKey()), append(types.PointerRegistryPrefix, types.PointerERC1155CW1155Prefix...)).ReverseIterator(nil, nil)
 	defer func() { _ = iter.Close() }()
-	seen := map[string]struct{}{}
 	for ; iter.Valid(); iter.Next() {
-		cwAddr := string(iter.Key()[:len(iter.Key())-2]) // last two bytes are version
-		if _, ok := seen[cwAddr]; ok {
-			continue
-		}
-		seen[cwAddr] = struct{}{}
-		addr := common.BytesToAddress(iter.Value())
+		cwAddr := string(iter.Key())
+		addr := common.BytesToAddress(iter.Value()[2:])
 		oName, err := k.QueryERCSingleOutput(ctx, "cw1155", addr, "name")
 		if err != nil {
 			logger.Error("Failed to upgrade pointer due to failed name query", "pointer", cwAddr, "err", err)
@@ -172,16 +152,10 @@ func MigrateCWERC20Pointers(ctx sdk.Context, k *keeper.Keeper) error {
 	bz, _ := json.Marshal(map[string]interface{}{})
 	moduleAcct := k.AccountKeeper().GetModuleAddress(types.ModuleName)
 	codeID := k.GetStoredPointerCodeID(ctx, types.PointerType_ERC20)
-	seen := map[string]struct{}{}
 	for ; iter.Valid(); iter.Next() {
-		evmAddr := string(iter.Key()[:len(iter.Key())-2]) // last two bytes are version
-		if _, ok := seen[evmAddr]; ok {
-			continue
-		}
-		seen[evmAddr] = struct{}{}
-		addr, err := sdk.AccAddressFromBech32(string(iter.Value()))
+		addr, err := sdk.AccAddressFromBech32(string(iter.Value()[2:]))
 		if err != nil {
-			logger.Error("error parsing cw-erc20 pointer address", "pointer", string(iter.Value()), "err", err)
+			logger.Error("error parsing cw-erc20 pointer address", "pointer", string(iter.Value()[2:]), "err", err)
 			return err
 		}
 		_, err = k.WasmKeeper().Migrate(ctx, addr, moduleAcct, codeID, bz)
@@ -199,16 +173,10 @@ func MigrateCWERC721Pointers(ctx sdk.Context, k *keeper.Keeper) error {
 	bz, _ := json.Marshal(map[string]interface{}{})
 	moduleAcct := k.AccountKeeper().GetModuleAddress(types.ModuleName)
 	codeID := k.GetStoredPointerCodeID(ctx, types.PointerType_ERC721)
-	seen := map[string]struct{}{}
 	for ; iter.Valid(); iter.Next() {
-		evmAddr := string(iter.Key()[:len(iter.Key())-2]) // last two bytes are version
-		if _, ok := seen[evmAddr]; ok {
-			continue
-		}
-		seen[evmAddr] = struct{}{}
-		addr, err := sdk.AccAddressFromBech32(string(iter.Value()))
+		addr, err := sdk.AccAddressFromBech32(string(iter.Value()[2:]))
 		if err != nil {
-			logger.Error("error parsing cw-erc721 pointer address", "pointer", string(iter.Value()), "err", err)
+			logger.Error("error parsing cw-erc721 pointer address", "pointer", string(iter.Value()[2:]), "err", err)
 			return err
 		}
 		_, err = k.WasmKeeper().Migrate(ctx, addr, moduleAcct, codeID, bz)
@@ -226,16 +194,10 @@ func MigrateCWERC1155Pointers(ctx sdk.Context, k *keeper.Keeper) error {
 	bz, _ := json.Marshal(map[string]interface{}{})
 	moduleAcct := k.AccountKeeper().GetModuleAddress(types.ModuleName)
 	codeID := k.GetStoredPointerCodeID(ctx, types.PointerType_ERC1155)
-	seen := map[string]struct{}{}
 	for ; iter.Valid(); iter.Next() {
-		evmAddr := string(iter.Key()[:len(iter.Key())-2]) // last two bytes are version
-		if _, ok := seen[evmAddr]; ok {
-			continue
-		}
-		seen[evmAddr] = struct{}{}
-		addr, err := sdk.AccAddressFromBech32(string(iter.Value()))
+		addr, err := sdk.AccAddressFromBech32(string(iter.Value()[2:]))
 		if err != nil {
-			logger.Error("error parsing cw-erc1155 pointer address", "pointer", string(iter.Value()), "err", err)
+			logger.Error("error parsing cw-erc1155 pointer address", "pointer", string(iter.Value()[2:]), "err", err)
 			return err
 		}
 		_, err = k.WasmKeeper().Migrate(ctx, addr, moduleAcct, codeID, bz)
