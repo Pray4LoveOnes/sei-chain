@@ -150,6 +150,7 @@ func setupTestServer(
 	cfg := evmrpcconfig.DefaultConfig
 	cfg.HTTPEnabled = true
 	cfg.HTTPPort = port
+	cfg.EnabledLegacySeiApis = evmrpc.SeiLegacyAllGatedMethodNames()
 	s, err := evmrpc.NewEVMHTTPServer(
 		cfg,
 		mockClient,
@@ -160,7 +161,7 @@ func setupTestServer(
 		ctxProvider,
 		func(int64) client.TxConfig { return a.GetTxConfig() },
 		"",
-		a.GetStateStore(),
+		nil,
 		func(ctx context.Context, hash common.Hash) (bool, error) {
 			return false, nil
 		},

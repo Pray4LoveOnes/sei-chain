@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	commonerrors "github.com/sei-protocol/sei-chain/sei-db/common/errors"
-	commonevm "github.com/sei-protocol/sei-chain/sei-db/common/evm"
+	"github.com/sei-protocol/sei-chain/sei-db/common/keys"
 	"github.com/sei-protocol/sei-chain/sei-db/config"
 	"github.com/sei-protocol/sei-chain/sei-db/proto"
 	"github.com/sei-protocol/sei-chain/sei-db/state_db/sc/flatkv"
@@ -19,14 +19,6 @@ import (
 )
 
 var logger = seilog.NewLogger("db", "state-db", "sc", "composite")
-
-// EVMStoreName is the module name for the EVM store in memiavl.
-const EVMStoreName = commonevm.EVMStoreKey
-
-// EVMFlatKVStoreName is the module name used when exporting/importing
-// EVM data from the FlatKV backend. Treated as a separate module in
-// state-sync snapshots so that import routes data exclusively to FlatKV.
-const EVMFlatKVStoreName = commonevm.EVMFlatKVStoreKey
 
 // For backward compatibility purpose reuse current interface
 var _ types.Committer = (*CompositeCommitStore)(nil)
@@ -38,8 +30,8 @@ type CompositeCommitStore struct {
 	// cosmosCommitter is the Cosmos (memiavl) backend - always initialized
 	cosmosCommitter *memiavl.CommitStore
 
-	// evmCommitter is the FlatKV backend - may be nil if not enabled
-	evmCommitter flatkv.Store
+	// flatkvCommitter is the FlatKV backend - may be nil if not enabled
+	flatkvCommitter flatkv.Store
 
 	// homeDir is the base directory for the store
 	homeDir string
@@ -56,6 +48,10 @@ func NewCompositeCommitStore(
 	homeDir string,
 	cfg config.StateCommitConfig,
 ) *CompositeCommitStore {
+	if err := cfg.Validate(); err != nil {
+		panic(fmt.Sprintf("invalid state commit config: %s", err))
+	}
+
 	// Always initialize the Cosmos backend (creates struct only, not opened)
 	cosmosCommitter := memiavl.NewCommitStore(homeDir, cfg.MemIAVLConfig)
 
@@ -68,8 +64,12 @@ func NewCompositeCommitStore(
 	// Initialize FlatKV store struct if write mode requires it
 	// Note: DB is NOT opened here, will be opened in LoadVersion
 	if cfg.WriteMode == config.DualWrite || cfg.WriteMode == config.SplitWrite {
-		flatkvPath := filepath.Join(homeDir, "data", "flatkv")
-		store.evmCommitter = flatkv.NewCommitStore(ctx, flatkvPath, cfg.FlatKVConfig)
+		cfg.FlatKVConfig.DataDir = filepath.Join(homeDir, "data", "flatkv")
+		var err error
+		store.flatkvCommitter, err = flatkv.NewCommitStore(ctx, &cfg.FlatKVConfig)
+		if err != nil {
+			panic(fmt.Errorf("failed to create FlatKV commit store: %w", err))
+		}
 	}
 
 	return store
@@ -86,7 +86,7 @@ func (cs *CompositeCommitStore) Initialize(initialStores []string) {
 // are created. Any writer lock acquired during cleanup is retained for
 // the subsequent LoadVersion(..., false) call.
 func (cs *CompositeCommitStore) CleanupCrashArtifacts() error {
-	if fkv, ok := cs.evmCommitter.(*flatkv.CommitStore); ok {
+	if fkv, ok := cs.flatkvCommitter.(*flatkv.CommitStore); ok {
 		if err := fkv.CleanupOrphanedReadOnlyDirs(); err != nil {
 			return err
 		}
@@ -118,23 +118,33 @@ func (cs *CompositeCommitStore) LoadVersion(targetVersion int64, readOnly bool) 
 			homeDir:         cs.homeDir,
 			config:          cs.config,
 		}
-		if cs.evmCommitter != nil {
-			evmStore, err := cs.evmCommitter.LoadVersion(targetVersion, true)
+		if cs.flatkvCommitter != nil {
+			evmStore, err := cs.flatkvCommitter.LoadVersion(targetVersion, true)
 			if err != nil {
-				logger.Info("FlatKV unavailable for readonly load, EVM data will not be served",
+				logger.Error("FlatKV unavailable for readonly load, EVM data will not be served",
 					"version", targetVersion, "err", err)
 			} else {
-				newStore.evmCommitter = evmStore
+				newStore.flatkvCommitter = evmStore
 			}
 		}
 		return newStore, nil
 	}
 
 	cs.cosmosCommitter = cosmosCommitter
-	if cs.evmCommitter != nil {
-		_, err := cs.evmCommitter.LoadVersion(targetVersion, false)
+	if cs.flatkvCommitter != nil {
+		_, err := cs.flatkvCommitter.LoadVersion(targetVersion, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load FlatKV version: %w", err)
+		}
+
+		// When loading latest (targetVersion==0), a crash between the
+		// sequential cosmos and EVM commits can leave the backends at
+		// different versions. Detect the mismatch and roll the ahead
+		// backend back so both restart from a consistent point.
+		if targetVersion == 0 {
+			if err := cs.reconcileVersions(); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -152,7 +162,7 @@ func (cs *CompositeCommitStore) ApplyChangeSets(changesets []*proto.NamedChangeS
 	var cosmosChangeset []*proto.NamedChangeSet
 
 	for _, changeset := range changesets {
-		if changeset.Name == EVMStoreName {
+		if changeset.Name == keys.EVMStoreKey {
 			evmChangeset = append(evmChangeset, changeset)
 		} else {
 			cosmosChangeset = append(cosmosChangeset, changeset)
@@ -180,8 +190,8 @@ func (cs *CompositeCommitStore) ApplyChangeSets(changesets []*proto.NamedChangeS
 		}
 	}
 
-	if cs.evmCommitter != nil && len(evmChangeset) > 0 {
-		if err := cs.evmCommitter.ApplyChangeSets(evmChangeset); err != nil {
+	if cs.flatkvCommitter != nil && len(evmChangeset) > 0 {
+		if err := cs.flatkvCommitter.ApplyChangeSets(evmChangeset); err != nil {
 			return fmt.Errorf("failed to apply EVM changesets: %w", err)
 		}
 	}
@@ -203,8 +213,8 @@ func (cs *CompositeCommitStore) Commit() (int64, error) {
 	}
 
 	// Commit to FlatKV as well if enabled
-	if cs.evmCommitter != nil {
-		evmVersion, err := cs.evmCommitter.Commit()
+	if cs.flatkvCommitter != nil {
+		evmVersion, err := cs.flatkvCommitter.Commit()
 		if err != nil {
 			return 0, fmt.Errorf("failed to commit to EVM store: %w", err)
 		}
@@ -216,12 +226,53 @@ func (cs *CompositeCommitStore) Commit() (int64, error) {
 	return cosmosVersion, nil
 }
 
+// reconcileVersions checks whether the cosmos and EVM backends are at the
+// same version after loading latest. A crash between the sequential Commit
+// calls can leave one backend one version ahead. When a mismatch is found
+// and both backends have committed at least once (version > 0), the ahead
+// backend is rolled back to the behind version. Rollback truncates the WAL
+// so the correction survives subsequent restarts.
+func (cs *CompositeCommitStore) reconcileVersions() error {
+	cosmosVer := cs.cosmosCommitter.Version()
+	evmVer := cs.flatkvCommitter.Version()
+	if cosmosVer == evmVer {
+		return nil
+	}
+
+	// Skip reconciliation when either backend is at version 0 (fresh
+	// initialization / migration), since that is not a crash artifact.
+	if cosmosVer == 0 || evmVer == 0 {
+		return nil
+	}
+
+	minVer := cosmosVer
+	if evmVer < minVer {
+		minVer = evmVer
+	}
+
+	logger.Warn("version mismatch between cosmos and EVM after loading latest, rolling back to consistent version",
+		"cosmosVersion", cosmosVer, "evmVersion", evmVer, "reconciledVersion", minVer)
+
+	if cosmosVer > minVer {
+		if err := cs.cosmosCommitter.Rollback(minVer); err != nil {
+			return fmt.Errorf("failed to rollback cosmos to reconciled version %d: %w", minVer, err)
+		}
+	}
+	if evmVer > minVer {
+		if err := cs.flatkvCommitter.Rollback(minVer); err != nil {
+			return fmt.Errorf("failed to rollback EVM to reconciled version %d: %w", minVer, err)
+		}
+	}
+
+	return nil
+}
+
 // Version returns the current version
 func (cs *CompositeCommitStore) Version() int64 {
 	if cs.cosmosCommitter != nil {
 		return cs.cosmosCommitter.Version()
-	} else if cs.evmCommitter != nil {
-		return cs.evmCommitter.Version()
+	} else if cs.flatkvCommitter != nil {
+		return cs.flatkvCommitter.Version()
 	}
 	return 0
 }
@@ -263,8 +314,8 @@ func (cs *CompositeCommitStore) appendEvmLatticeHash(ci *proto.CommitInfo, evmHa
 // WorkingCommitInfo returns the working commit info
 func (cs *CompositeCommitStore) WorkingCommitInfo() *proto.CommitInfo {
 	ci := cs.cosmosCommitter.WorkingCommitInfo()
-	if cs.evmCommitter != nil {
-		return cs.appendEvmLatticeHash(ci, cs.evmCommitter.RootHash())
+	if cs.flatkvCommitter != nil {
+		return cs.appendEvmLatticeHash(ci, cs.flatkvCommitter.RootHash())
 	}
 	return ci
 }
@@ -272,8 +323,8 @@ func (cs *CompositeCommitStore) WorkingCommitInfo() *proto.CommitInfo {
 // LastCommitInfo returns the last commit info
 func (cs *CompositeCommitStore) LastCommitInfo() *proto.CommitInfo {
 	ci := cs.cosmosCommitter.LastCommitInfo()
-	if cs.evmCommitter != nil {
-		return cs.appendEvmLatticeHash(ci, cs.evmCommitter.CommittedRootHash())
+	if cs.flatkvCommitter != nil {
+		return cs.appendEvmLatticeHash(ci, cs.flatkvCommitter.CommittedRootHash())
 	}
 	return ci
 }
@@ -290,8 +341,8 @@ func (cs *CompositeCommitStore) Rollback(targetVersion int64) error {
 		return fmt.Errorf("failed to rollback cosmos commit store: %w", err)
 	}
 
-	if cs.evmCommitter != nil {
-		if err := cs.evmCommitter.Rollback(targetVersion); err != nil {
+	if cs.flatkvCommitter != nil {
+		if err := cs.flatkvCommitter.Rollback(targetVersion); err != nil {
 			return fmt.Errorf("failed to rollback evm commit store: %w", err)
 		}
 	}
@@ -310,16 +361,16 @@ func (cs *CompositeCommitStore) Exporter(version int64) (types.Exporter, error) 
 		return nil, fmt.Errorf("failed to create cosmos exporter: %w", err)
 	}
 
-	var evmExporter types.Exporter
-	if cs.evmCommitter != nil && (cs.config.WriteMode == config.SplitWrite || cs.config.WriteMode == config.DualWrite) {
-		evmExporter, err = cs.evmCommitter.Exporter(version)
+	var flatkvExporter types.Exporter
+	if cs.flatkvCommitter != nil && (cs.config.WriteMode == config.SplitWrite || cs.config.WriteMode == config.DualWrite) {
+		flatkvExporter, err = cs.flatkvCommitter.Exporter(version)
 		if err != nil {
 			_ = cosmosExporter.Close()
-			return nil, fmt.Errorf("failed to create evm exporter: %w", err)
+			return nil, fmt.Errorf("failed to create flatkv exporter: %w", err)
 		}
 	}
 
-	return NewExporter(cosmosExporter, evmExporter)
+	return NewExporter(cosmosExporter, flatkvExporter)
 }
 
 // Importer returns an importer for state sync
@@ -329,11 +380,11 @@ func (cs *CompositeCommitStore) Importer(version int64) (types.Importer, error) 
 		return nil, err
 	}
 	var evmImporter types.Importer
-	if cs.evmCommitter != nil {
-		evmImporter, err = cs.evmCommitter.Importer(version)
+	if cs.flatkvCommitter != nil {
+		evmImporter, err = cs.flatkvCommitter.Importer(version)
 		if err != nil {
 			_ = cosmosImporter.Close()
-			return nil, fmt.Errorf("failed to create evm importer: %w", err)
+			return nil, fmt.Errorf("failed to create flatkv importer: %w", err)
 		}
 	}
 	compositeImporter := NewImporter(cosmosImporter, evmImporter)
@@ -350,8 +401,8 @@ func (cs *CompositeCommitStore) Close() error {
 		}
 	}
 
-	if cs.evmCommitter != nil {
-		if err := cs.evmCommitter.Close(); err != nil {
+	if cs.flatkvCommitter != nil {
+		if err := cs.flatkvCommitter.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to close FlatKV: %w", err))
 		}
 	}

@@ -45,6 +45,10 @@ func (m *mockApplication) CommitMultiStore() sdk.CommitMultiStore {
 	return m.cms
 }
 
+func (m *mockApplication) GetValidators() []abci.ValidatorUpdate {
+	return nil
+}
+
 func (m *mockApplication) Close() error {
 	return m.cms.Close()
 }
@@ -92,10 +96,6 @@ func (m *mockApplication) LoadSnapshotChunk(ctx context.Context, req *abci.Reque
 
 func (m *mockApplication) ApplySnapshotChunk(ctx context.Context, req *abci.RequestApplySnapshotChunk) (*abci.ResponseApplySnapshotChunk, error) {
 	return &abci.ResponseApplySnapshotChunk{}, nil
-}
-
-func (m *mockApplication) PrepareProposal(ctx context.Context, req *abci.RequestPrepareProposal) (*abci.ResponsePrepareProposal, error) {
-	return &abci.ResponsePrepareProposal{}, nil
 }
 
 func (m *mockApplication) ProcessProposal(ctx context.Context, req *abci.RequestProcessProposal) (*abci.ResponseProcessProposal, error) {

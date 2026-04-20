@@ -86,7 +86,6 @@ type BaseApp struct {
 	interfaceRegistry types.InterfaceRegistry
 	txDecoder         sdk.TxDecoder // unmarshal []byte into sdk.Tx
 
-	prepareProposalHandler    sdk.PrepareProposalHandler
 	processProposalHandler    sdk.ProcessProposalHandler
 	finalizeBlocker           sdk.FinalizeBlocker
 	anteHandler               sdk.AnteHandler // ante handler for fee and auth
@@ -98,7 +97,6 @@ type BaseApp struct {
 
 	appStore
 	baseappVersions
-	peerFilters
 	snapshotData
 	abciData
 	moduleRouter
@@ -107,11 +105,11 @@ type BaseApp struct {
 	//
 	// checkState is set on InitChain and reset on Commit
 	// deliverState is set on InitChain and BeginBlock and set to nil on Commit
-	checkState           *state // for CheckTx
-	deliverState         *state // for DeliverTx
-	prepareProposalState *state
-	processProposalState *state
-	stateToCommit        *state
+	checkState              *state // for CheckTx
+	deliverState            *state // for DeliverTx
+	processProposalState    *state
+	processProposalCleanCtx sdk.Context // snapshot before optimistic processing
+	stateToCommit           *state
 
 	// paramStore is used to query for ABCI consensus parameters from an
 	// application parameter store.
@@ -570,21 +568,6 @@ func (app *BaseApp) setDeliverState(header tmproto.Header) {
 	app.deliverState.SetContext(ctx)
 }
 
-func (app *BaseApp) setPrepareProposalState(header tmproto.Header) {
-	ms := app.cms.CacheMultiStore()
-	ctx := sdk.NewContext(ms, header, false)
-	if app.prepareProposalState == nil {
-		app.prepareProposalState = &state{
-			ms:  ms,
-			ctx: ctx,
-			mtx: &sync.RWMutex{},
-		}
-		return
-	}
-	app.prepareProposalState.SetMultiStore(ms)
-	app.prepareProposalState.SetContext(ctx)
-}
-
 func (app *BaseApp) setProcessProposalState(header tmproto.Header) {
 	ms := app.cms.CacheMultiStore()
 	ctx := sdk.NewContext(ms, header, false)
@@ -601,14 +584,9 @@ func (app *BaseApp) setProcessProposalState(header tmproto.Header) {
 }
 
 func (app *BaseApp) resetStatesExceptCheckState() {
-	app.prepareProposalState = nil
 	app.processProposalState = nil
 	app.deliverState = nil
 	app.stateToCommit = nil
-}
-
-func (app *BaseApp) setPrepareProposalHeader(header tmproto.Header) {
-	app.prepareProposalState.SetContext(app.prepareProposalState.Context().WithBlockHeader(header))
 }
 
 func (app *BaseApp) setProcessProposalHeader(header tmproto.Header) {
@@ -619,10 +597,12 @@ func (app *BaseApp) setDeliverStateHeader(header tmproto.Header) {
 	app.deliverState.SetContext(app.deliverState.Context().WithBlockHeader(header).WithBlockHeight(header.Height))
 }
 
-func (app *BaseApp) preparePrepareProposalState() {
-	if app.prepareProposalState.MultiStore().TracingEnabled() {
-		app.prepareProposalState.SetMultiStore(app.prepareProposalState.MultiStore().SetTracingContext(nil).(sdk.CacheMultiStore))
-	}
+// GetProcessProposalCleanContext returns a context snapshotted at the start of
+// ProcessProposal, before the handler runs. It has the correct store state,
+// consensus params, and header, but is immune to speculative writes from
+// optimistic processing.
+func (app *BaseApp) GetProcessProposalCleanContext() sdk.Context {
+	return app.processProposalCleanCtx
 }
 
 func (app *BaseApp) prepareProcessProposalState(headerHash []byte) {
@@ -869,11 +849,15 @@ func (app *BaseApp) runTx(ctx sdk.Context, mode runTxMode, tx sdk.Tx, checksum [
 
 	ms := ctx.MultiStore()
 
+	blockGasMeter := ctx.GasMeter()
 	defer func() {
 		if r := recover(); r != nil {
 			recoveryMW := newOutOfGasRecoveryMiddleware(gasWanted, ctx, app.runTxRecoveryMiddleware)
 			recoveryMW = newOCCAbortRecoveryMiddleware(recoveryMW) // TODO: do we have to wrap with occ enabled check?
 			err, result = processRecovery(r, recoveryMW), nil
+		}
+		if ctx.GasMeter() == blockGasMeter {
+			return
 		}
 		gInfo = sdk.GasInfo{GasWanted: gasWanted, GasUsed: ctx.GasMeter().GasConsumed(), GasEstimate: gasEstimate}
 	}()
@@ -1124,14 +1108,14 @@ func (app *BaseApp) Close() error {
 	// and metadata in a non-atomic way
 	app.commitLock.Lock()
 	defer app.commitLock.Unlock()
-	if err := app.db.Close(); err != nil {
-		return err
+	if app.db != nil {
+		if err := app.db.Close(); err != nil {
+			return err
+		}
 	}
-	// close the underline database for storeV2
 	if err := app.cms.Close(); err != nil {
 		return err
 	}
-	// close snapshot manager if configured
 	if app.snapshotManager != nil {
 		if err := app.snapshotManager.Close(); err != nil {
 			return err
@@ -1141,22 +1125,6 @@ func (app *BaseApp) Close() error {
 		return nil
 	}
 	return app.closeHandler()
-}
-
-func (app *BaseApp) ReloadDB() error {
-	if err := app.db.Close(); err != nil {
-		return err
-	}
-	db, err := sdk.NewLevelDB("application", app.TmConfig.DBDir())
-	if err != nil {
-		return err
-	}
-	app.db = db
-	app.cms = store.NewCommitMultiStore(db)
-	if app.snapshotManager != nil {
-		app.snapshotManager.SetMultiStore(app.cms)
-	}
-	return nil
 }
 
 func (app *BaseApp) GetCheckCtx() sdk.Context {

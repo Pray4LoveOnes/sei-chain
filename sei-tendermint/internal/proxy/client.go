@@ -28,11 +28,6 @@ func (app *proxyClient) InitChain(ctx context.Context, req *types.RequestInitCha
 	return app.app.InitChain(ctx, req)
 }
 
-func (app *proxyClient) PrepareProposal(ctx context.Context, req *types.RequestPrepareProposal) (*types.ResponsePrepareProposal, error) {
-	defer addTimeSample(app.metrics.MethodTiming.With("method", "prepare_proposal", "type", "sync"))()
-	return app.app.PrepareProposal(ctx, req)
-}
-
 func (app *proxyClient) ProcessProposal(ctx context.Context, req *types.RequestProcessProposal) (*types.ResponseProcessProposal, error) {
 	defer addTimeSample(app.metrics.MethodTiming.With("method", "process_proposal", "type", "sync"))()
 	return app.app.ProcessProposal(ctx, req)
@@ -66,6 +61,10 @@ func (app *proxyClient) Info(ctx context.Context, req *types.RequestInfo) (*type
 func (app *proxyClient) Query(ctx context.Context, req *types.RequestQuery) (*types.ResponseQuery, error) {
 	defer addTimeSample(app.metrics.MethodTiming.With("method", "query", "type", "sync"))()
 	return app.app.Query(ctx, req)
+}
+
+func (app *proxyClient) GetValidators() []types.ValidatorUpdate {
+	return app.app.GetValidators()
 }
 
 func (app *proxyClient) ListSnapshots(ctx context.Context, req *types.RequestListSnapshots) (*types.ResponseListSnapshots, error) {

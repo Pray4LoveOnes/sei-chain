@@ -42,6 +42,9 @@ type HTTPConfig struct {
 	CorsAllowedOrigins []string
 	Vhosts             []string
 	DenyList           []string
+	// SeiLegacyAllowlist is BuildSeiLegacyEnabledSet(app.toml enabled_legacy_sei_apis); nil skips the HTTP gate
+	// for gated sei_* and sei2_* methods.
+	SeiLegacyAllowlist map[string]struct{}
 	prefix             string // path prefix on which to mount http handler
 	RPCEndpointConfig
 }
@@ -312,8 +315,9 @@ func (h *HTTPServer) EnableRPC(apis []rpc.API, config HTTPConfig) error {
 		srv.RegisterDenyList(method)
 	}
 	h.HTTPConfig = config
+	base := NewHTTPHandlerStack(srv, config.CorsAllowedOrigins, config.Vhosts, config.JwtSecret)
 	h.httpHandler.Store(&rpcHandler{
-		Handler: NewHTTPHandlerStack(srv, config.CorsAllowedOrigins, config.Vhosts, config.JwtSecret),
+		Handler: wrapSeiLegacyHTTP(base, config.SeiLegacyAllowlist),
 		server:  srv,
 	})
 	return nil
@@ -354,6 +358,8 @@ func (h *HTTPServer) EnableWS(apis []rpc.API, config WsConfig) error {
 }
 
 // stopWS disables JSON-RPC over WebSocket and also stops the server if it only serves WebSocket.
+//
+//lint:ignore U1000 lifecycle method retained for completeness
 func (h *HTTPServer) stopWS() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -493,7 +499,7 @@ func (w *gzipResponseWriter) init() {
 	hdr := w.resp.Header()
 	length := hdr.Get("content-length")
 	if len(length) > 0 {
-		if n, err := strconv.ParseUint(length, 10, 64); err != nil {
+		if n, err := strconv.ParseUint(length, 10, 64); err == nil {
 			w.hasLength = true
 			w.contentLength = n
 		}
@@ -541,6 +547,8 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 		// the gzip stream to ensure the footer will be seen by the client in case the
 		// response is flushed after this call to write.
 		err = w.gz.Close()
+		gzPool.Put(w.gz)
+		w.gz = nil
 	}
 	return n, err
 }

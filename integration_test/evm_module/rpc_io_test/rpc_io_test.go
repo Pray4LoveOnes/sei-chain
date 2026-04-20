@@ -128,7 +128,7 @@ func TestEVMRPCSpec(t *testing.T) {
 				if debug {
 					t.Logf("[DEBUG] pair %d: request %s", i+1, req)
 				}
-				body, status, err := client.call(req)
+				body, status, respHdr, err := client.call(req)
 				if err != nil {
 					t.Fatalf("pair %d: call: %v", i+1, err)
 				}
@@ -152,6 +152,8 @@ func TestEVMRPCSpec(t *testing.T) {
 					if !sameBlockResult(t, body, responses[refIdx]) {
 						t.Fatalf("pair %d: ref_pair %d check failed", i+1, pair.RefPair)
 					}
+					assertPairBodyDirectives(t, pair, body)
+					assertPairHeaderDirectives(t, pair, respHdr)
 					continue
 				}
 				if len(pair.Expected) > 0 {
@@ -159,17 +161,31 @@ func TestEVMRPCSpec(t *testing.T) {
 						logActualResponse(t, body)
 						t.Fatalf("pair %d: spec-only check failed", i+1)
 					}
+					assertPairBodyDirectives(t, pair, body)
+					assertPairHeaderDirectives(t, pair, respHdr)
 					continue
 				}
 				var m map[string]json.RawMessage
 				if err := json.Unmarshal(body, &m); err != nil {
-					t.Fatalf("pair %d: invalid JSON response", i+1)
+					// JSON-RPC batch responses are a top-level JSON array; require @ directives to assert them.
+					var batch []json.RawMessage
+					if err2 := json.Unmarshal(body, &batch); err2 == nil && len(batch) > 0 {
+						if len(pair.ExpectBodyContains) == 0 && len(pair.ExpectResponseHeaders) == 0 {
+							t.Fatalf("pair %d: batch response needs @ expect_body_contains or @ expect_response_header (got %d elements)", i+1, len(batch))
+						}
+						assertPairBodyDirectives(t, pair, body)
+						assertPairHeaderDirectives(t, pair, respHdr)
+						continue
+					}
+					t.Fatalf("pair %d: invalid JSON response: %v", i+1, err)
 				}
 				if _, hasResult := m["result"]; !hasResult {
 					if _, hasErr := m["error"]; !hasErr {
 						t.Fatalf("pair %d: response has neither result nor error", i+1)
 					}
 				}
+				assertPairBodyDirectives(t, pair, body)
+				assertPairHeaderDirectives(t, pair, respHdr)
 			}
 		})
 	}
@@ -208,7 +224,7 @@ func rpcURL() string {
 }
 
 func nodeReachable(c *rpcClient) bool {
-	body, status, err := c.call([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+	body, status, _, err := c.call([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 	if err != nil || status != http.StatusOK {
 		return false
 	}

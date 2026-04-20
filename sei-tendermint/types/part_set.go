@@ -37,6 +37,9 @@ func (part *Part) ValidateBasic() error {
 	if err := part.Proof.ValidateBasic(); err != nil {
 		return fmt.Errorf("wrong Proof: %w", err)
 	}
+	if int64(part.Index) != part.Proof.Index {
+		return fmt.Errorf("part index %d does not match proof index %d", part.Index, part.Proof.Index)
+	}
 	return nil
 }
 
@@ -115,6 +118,10 @@ func (psh PartSetHeader) ValidateBasic() error {
 	if err := ValidateHash(psh.Hash); err != nil {
 		return fmt.Errorf("wrong Hash: %w", err)
 	}
+	// Check memory limits before acquiring lock or setting any state
+	if psh.Total > MaxBlockPartsCount {
+		return fmt.Errorf("Total = %v, want <=%v", psh.Total, MaxBlockPartsCount)
+	}
 	return nil
 }
 
@@ -172,7 +179,7 @@ func NewPartSetFromData(data []byte, partSize uint32) *PartSet {
 	parts := make([]*Part, total)
 	partsBytes := make([][]byte, total)
 	partsBitArray := bits.NewBitArray(int(total)) //nolint:gosec // total fits in int since it's derived from block-bounded data
-	for i := uint32(0); i < total; i++ {
+	for i := range total {
 		part := &Part{
 			Index: i,
 			Bytes: data[i*partSize : tmmath.MinInt(len(data), int((i+1)*partSize))], //nolint:gosec // partSize is small (4KB); product fits in uint32

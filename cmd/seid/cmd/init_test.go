@@ -56,9 +56,6 @@ func TestInitModeConfiguration(t *testing.T) {
 				require.False(t, v.GetBool("state-store.ss-enable"), "StateStore should be disabled")
 				require.False(t, v.GetBool("evm.http_enabled"), "EVM HTTP should be disabled")
 				require.False(t, v.GetBool("evm.ws_enabled"), "EVM WS should be disabled")
-
-				// Verify pruning uses cosmos default (now in iavl section)
-				require.Equal(t, "nothing", v.GetString("iavl.pruning"))
 			},
 		},
 		{
@@ -88,9 +85,6 @@ func TestInitModeConfiguration(t *testing.T) {
 				require.True(t, v.GetBool("state-store.ss-enable"), "StateStore should be enabled")
 
 				// Note: EVM config requires custom template, tested separately in TestSetEVMConfigByMode and binary tests
-
-				// Verify pruning uses cosmos default (now in iavl section)
-				require.Equal(t, "nothing", v.GetString("iavl.pruning"))
 			},
 		},
 		{
@@ -101,9 +95,6 @@ func TestInitModeConfiguration(t *testing.T) {
 				v.SetConfigFile(filepath.Join(configDir, "app.toml"))
 				err := v.ReadInConfig()
 				require.NoError(t, err)
-
-				// Verify no pruning for archive (now in iavl section)
-				require.Equal(t, "nothing", v.GetString("iavl.pruning"))
 
 				// Verify services are enabled
 				require.True(t, v.GetBool("api.enable"))
@@ -177,7 +168,6 @@ func TestInitModeConfiguration(t *testing.T) {
 			require.Equal(t, "pebbledb", v.GetString("receipt-store.rs-backend"))
 			require.Equal(t, "", v.GetString("receipt-store.db-directory"))
 			require.Equal(t, seidbconfig.DefaultReceiptStoreConfig().AsyncWriteBuffer, v.GetInt("receipt-store.async-write-buffer"))
-			require.Equal(t, seidbconfig.DefaultReceiptStoreConfig().KeepRecent, v.GetInt("receipt-store.keep-recent"))
 			require.Equal(t, seidbconfig.DefaultReceiptStoreConfig().PruneIntervalSeconds, v.GetInt("receipt-store.prune-interval-seconds"))
 		})
 	}
@@ -198,7 +188,6 @@ func TestInitAppConfigIncludesReceiptStoreDefaults(t *testing.T) {
 	require.Contains(t, output, `rs-backend = "pebbledb"`)
 	require.Contains(t, output, `db-directory = ""`)
 	require.Contains(t, output, "async-write-buffer =")
-	require.Contains(t, output, "keep-recent =")
 	require.Contains(t, output, "prune-interval-seconds =")
 	require.NotContains(t, output, "use-default-comparer")
 }

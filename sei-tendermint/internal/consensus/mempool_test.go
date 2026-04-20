@@ -20,16 +20,9 @@ import (
 	sm "github.com/sei-protocol/sei-chain/sei-tendermint/internal/state"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/store"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/test/factory"
+	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/types"
 )
-
-// for testing
-func assertMempool(t *testing.T, txn txNotifier) mempool.Mempool {
-	t.Helper()
-	mp, ok := txn.(mempool.Mempool)
-	require.True(t, ok)
-	return mp
-}
 
 func ensureNewBlockHeightEventually(t *testing.T, newBlockCh <-chan tmpubsub.Message, expectedHeight int64) {
 	t.Helper()
@@ -70,7 +63,6 @@ func TestMempoolNoProgressUntilTxsAvailable(t *testing.T) {
 		Power:      10,
 		Params:     factory.ConsensusParams()})
 	cs := newStateWithConfig(ctx, config, state, privVals[0], NewCounterApplication())
-	assertMempool(t, cs.txNotifier).EnableTxsAvailable()
 	height, round := cs.roundState.Height(), cs.roundState.Round()
 	newBlockCh := subscribe(ctx, t, cs.eventBus, types.EventQueryNewBlock)
 	startTestRound(ctx, cs, height, round)
@@ -97,15 +89,14 @@ func TestMempoolProgressAfterCreateEmptyBlocksInterval(t *testing.T) {
 		Power:      10,
 		Params:     factory.ConsensusParams()})
 	cs := newStateWithConfig(ctx, config, state, privVals[0], NewCounterApplication())
-
-	assertMempool(t, cs.txNotifier).EnableTxsAvailable()
+	height, round := cs.roundState.Height(), cs.roundState.Round()
 
 	newBlockCh := subscribe(ctx, t, cs.eventBus, types.EventQueryNewBlock)
-	startTestRound(ctx, cs, cs.roundState.Height(), cs.roundState.Round())
+	startTestRound(ctx, cs, height, round)
 
-	ensureNewEventOnChannel(t, newBlockCh)   // first block gets committed
-	ensureNoNewEventOnChannel(t, newBlockCh) // then we dont make a block ...
-	ensureNewEventOnChannel(t, newBlockCh)   // until the CreateEmptyBlocksInterval has passed
+	ensureNewEventOnChannel(t, newBlockCh)                  // first block gets committed
+	ensureNoNewEventOnChannel(t, newBlockCh)                // then we don't make a block ...
+	ensureNewBlockHeightEventually(t, newBlockCh, height+1) // until the CreateEmptyBlocksInterval has passed
 }
 
 func TestMempoolProgressInHigherRound(t *testing.T) {
@@ -122,7 +113,6 @@ func TestMempoolProgressInHigherRound(t *testing.T) {
 		Power:      10,
 		Params:     factory.ConsensusParams()})
 	cs := newStateWithConfig(ctx, config, state, privVals[0], NewCounterApplication())
-	assertMempool(t, cs.txNotifier).EnableTxsAvailable()
 	height, round := cs.roundState.Height(), cs.roundState.Round()
 	newBlockCh := subscribe(ctx, t, cs.eventBus, types.EventQueryNewBlock)
 	newRoundCh := subscribe(ctx, t, cs.eventBus, types.EventQueryNewRound)
@@ -158,7 +148,7 @@ func checkTxsRange(ctx context.Context, t *testing.T, cs *State, start, end int)
 		txBytes := make([]byte, 8)
 		binary.BigEndian.PutUint64(txBytes, uint64(i))
 		var rCode uint32
-		err := assertMempool(t, cs.txNotifier).CheckTx(ctx, txBytes, func(r *abci.ResponseCheckTx) { rCode = r.Code }, mempool.TxInfo{})
+		err := cs.txMempool.CheckTx(ctx, txBytes, func(r *abci.ResponseCheckTx) { rCode = r.Code }, mempool.TxInfo{})
 		require.NoError(t, err, "error after checkTx")
 		require.Equal(t, code.CodeTypeOK, rCode, "checkTx code is error, txBytes %X, index=%d", txBytes, i)
 	}
@@ -193,7 +183,7 @@ func TestMempoolTxConcurrentWithCommit(t *testing.T) {
 		txBytes := make([]byte, 8)
 		binary.BigEndian.PutUint64(txBytes, uint64(i))
 		var rCode uint32
-		err := assertMempool(t, cs.txNotifier).CheckTx(ctx, txBytes, func(r *abci.ResponseCheckTx) { rCode = r.Code }, mempool.TxInfo{})
+		err := cs.txMempool.CheckTx(ctx, txBytes, func(r *abci.ResponseCheckTx) { rCode = r.Code }, mempool.TxInfo{})
 		require.NoError(t, err, "error after checkTx")
 		require.Equal(t, code.CodeTypeOK, rCode, "checkTx code is error, txBytes %X, index=%d", txBytes, i)
 	}
@@ -244,7 +234,7 @@ func TestMempoolRmBadTx(t *testing.T) {
 		// Try to send the tx through the mempool.
 		// CheckTx should not err, but the app should return a bad abci code
 		// and the tx should get removed from the pool
-		err := assertMempool(t, cs.txNotifier).CheckTx(ctx, txBytes, func(r *abci.ResponseCheckTx) {
+		err := cs.txMempool.CheckTx(ctx, txBytes, func(r *abci.ResponseCheckTx) {
 			if r.Code != code.CodeTypeBadNonce {
 				t.Errorf("expected checktx to return bad nonce, got %v", r)
 				return
@@ -258,7 +248,7 @@ func TestMempoolRmBadTx(t *testing.T) {
 
 		// check for the tx
 		for {
-			txs := assertMempool(t, cs.txNotifier).ReapMaxBytesMaxGas(int64(len(txBytes)), -1, -1)
+			txs := cs.txMempool.ReapMaxBytesMaxGas(int64(len(txBytes)), utils.Max[int64](), utils.Max[int64]())
 			if len(txs) == 0 {
 				emptyMempoolCh <- struct{}{}
 				return
@@ -361,22 +351,6 @@ func (app *CounterApplication) Commit(context.Context) (*abci.ResponseCommit, er
 	defer app.mu.Unlock()
 	app.mempoolTxCount = app.txCount
 	return &abci.ResponseCommit{}, nil
-}
-
-func (app *CounterApplication) PrepareProposal(_ context.Context, req *abci.RequestPrepareProposal) (*abci.ResponsePrepareProposal, error) {
-	trs := make([]*abci.TxRecord, 0, len(req.Txs))
-	var totalBytes int64
-	for _, tx := range req.Txs {
-		totalBytes += int64(len(tx))
-		if totalBytes > req.MaxTxBytes {
-			break
-		}
-		trs = append(trs, &abci.TxRecord{
-			Action: abci.TxRecord_UNMODIFIED,
-			Tx:     tx,
-		})
-	}
-	return &abci.ResponsePrepareProposal{TxRecords: trs}, nil
 }
 
 func (app *CounterApplication) ProcessProposal(_ context.Context, req *abci.RequestProcessProposal) (*abci.ResponseProcessProposal, error) {

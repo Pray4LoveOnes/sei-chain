@@ -97,6 +97,62 @@ func TestParseIOFile_CommentsAndWhitespace(t *testing.T) {
 	}
 }
 
+func TestParseIOFile_ExpectBodyContains(t *testing.T) {
+	content := `>> {"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}
+<< {"jsonrpc":"2.0","id":1,"result":"0x1"}
+@ expect_body_contains jsonrpc
+`
+	pairs, err := parseIOFile(content)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("expected 1 pair, got %d", len(pairs))
+	}
+	if len(pairs[0].ExpectBodyContains) != 1 || pairs[0].ExpectBodyContains[0] != "jsonrpc" {
+		t.Fatalf("ExpectBodyContains: %+v", pairs[0].ExpectBodyContains)
+	}
+}
+
+func TestParseIOFile_BareLTLTEmptyExpected(t *testing.T) {
+	// A line that is only << (empty body after the marker) still ends the pair with zero-length Expected;
+	// @ expect_body_* / @ expect_response_* can assert on the raw HTTP body (e.g. JSON array batch).
+	content := `>> [1,2]
+<<
+@ expect_body_contains x
+`
+	pairs, err := parseIOFile(content)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("expected 1 pair, got %d", len(pairs))
+	}
+	if len(pairs[0].Expected) != 0 {
+		t.Fatalf("expected empty Expected, got %q", pairs[0].Expected)
+	}
+	if len(pairs[0].ExpectBodyContains) != 1 || pairs[0].ExpectBodyContains[0] != "x" {
+		t.Fatalf("ExpectBodyContains: %+v", pairs[0].ExpectBodyContains)
+	}
+}
+
+func TestParseIOFile_ExpectResponseHeader(t *testing.T) {
+	content := `>> {"jsonrpc":"2.0","id":1,"method":"sei_getBlockByNumber","params":["latest",false]}
+<< {"jsonrpc":"2.0","id":1,"result":{}}
+@ expect_response_header Sei-Legacy-RPC-Deprecation
+`
+	pairs, err := parseIOFile(content)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("expected 1 pair, got %d", len(pairs))
+	}
+	if len(pairs[0].ExpectResponseHeaders) != 1 || pairs[0].ExpectResponseHeaders[0] != "Sei-Legacy-RPC-Deprecation" {
+		t.Fatalf("ExpectResponseHeaders: %+v", pairs[0].ExpectResponseHeaders)
+	}
+}
+
 func TestParseIOFile_RefPairOnly(t *testing.T) {
 	content := `>> {"method":"eth_getBlockByHash","params":["0xabc",false]}
 << @ ref_pair 1
@@ -150,6 +206,16 @@ func TestParseIOFile_InvalidDirectives(t *testing.T) {
 		_, err := parseIOFile(content)
 		if err == nil {
 			t.Fatal("expected error for bind with empty var")
+		}
+	})
+	t.Run("unknown directive", func(t *testing.T) {
+		content := `>> {"method":"eth_chainId"}
+<< {"result":"0x1"}
+@ not_a_real_directive foo
+`
+		_, err := parseIOFile(content)
+		if err == nil {
+			t.Fatal("expected error for unknown directive")
 		}
 	})
 }

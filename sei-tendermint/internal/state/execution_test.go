@@ -2,7 +2,6 @@ package state_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/sei-protocol/sei-chain/sei-tendermint/crypto"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/crypto/ed25519"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/eventbus"
-	mpmocks "github.com/sei-protocol/sei-chain/sei-tendermint/internal/mempool/mocks"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/pubsub"
 	sm "github.com/sei-protocol/sei-chain/sei-tendermint/internal/state"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/state/mocks"
@@ -44,18 +42,7 @@ func TestApplyBlock(t *testing.T) {
 	state, stateDB, _ := makeState(t, 1, 1)
 	stateStore := sm.NewStore(stateDB)
 	blockStore := store.NewBlockStore(dbm.NewMemDB())
-	mp := &mpmocks.Mempool{}
-	mp.On("Lock").Return()
-	mp.On("Unlock").Return()
-	mp.On("Update",
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything).Return(nil)
-	mp.On("TxStore").Return(nil)
+	mp := makeTxMempool(t, app)
 	blockExec := sm.NewBlockExecutor(stateStore, app, mp, sm.EmptyEvidencePool{}, blockStore, eventBus, sm.NopMetrics())
 
 	block := sf.MakeBlock(state, 1, new(types.Commit))
@@ -99,18 +86,7 @@ func TestFinalizeBlockDecidedLastCommit(t *testing.T) {
 			evpool.On("PendingEvidence", mock.Anything).Return([]types.Evidence{}, 0)
 			evpool.On("Update", ctx, mock.Anything, mock.Anything).Return()
 			evpool.On("CheckEvidence", ctx, mock.Anything).Return(nil)
-			mp := &mpmocks.Mempool{}
-			mp.On("Lock").Return()
-			mp.On("Unlock").Return()
-			mp.On("Update",
-				mock.Anything,
-				mock.Anything,
-				mock.Anything,
-				mock.Anything,
-				mock.Anything,
-				mock.Anything,
-				mock.Anything).Return(nil)
-			mp.On("TxStore").Return(nil)
+			mp := makeTxMempool(t, app)
 
 			eventBus := eventbus.NewDefault()
 			require.NoError(t, eventBus.Start(ctx))
@@ -152,7 +128,7 @@ func TestFinalizeBlockByzantineValidators(t *testing.T) {
 
 	defaultEvidenceTime := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
 	privVal := privVals[state.Validators.Validators[0].Address.String()]
-	blockID := makeBlockID([]byte("headerhash"), 1000, []byte("partshash"))
+	blockID := makeBlockID([]byte("headerhash"), types.MaxBlockPartsCount, []byte("partshash"))
 	header := &types.Header{
 		Version:            version.Consensus{Block: version.BlockProtocol, App: 1},
 		ChainID:            state.ChainID,
@@ -180,7 +156,7 @@ func TestFinalizeBlockByzantineValidators(t *testing.T) {
 				Header: header,
 				Commit: &types.Commit{
 					Height:  10,
-					BlockID: makeBlockID(header.Hash(), 100, []byte("partshash")),
+					BlockID: makeBlockID(header.Hash(), types.MaxBlockPartsCount, []byte("partshash")),
 					Signatures: []types.CommitSig{{
 						BlockIDFlag:      types.BlockIDFlagNil,
 						ValidatorAddress: crypto.AddressHash([]byte("validator_address")),
@@ -220,18 +196,7 @@ func TestFinalizeBlockByzantineValidators(t *testing.T) {
 	evpool.On("PendingEvidence", mock.AnythingOfType("int64")).Return(ev, int64(100))
 	evpool.On("Update", ctx, mock.AnythingOfType("state.State"), mock.AnythingOfType("types.EvidenceList")).Return()
 	evpool.On("CheckEvidence", ctx, mock.AnythingOfType("types.EvidenceList")).Return(nil)
-	mp := &mpmocks.Mempool{}
-	mp.On("Lock").Return()
-	mp.On("Unlock").Return()
-	mp.On("Update",
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything).Return(nil)
-	mp.On("TxStore").Return(nil)
+	mp := makeTxMempool(t, app)
 
 	eventBus := eventbus.NewDefault()
 	require.NoError(t, eventBus.Start(ctx))
@@ -269,8 +234,7 @@ func TestProcessProposal(t *testing.T) {
 	eventBus := eventbus.NewDefault()
 	require.NoError(t, eventBus.Start(ctx))
 
-	mp := &mpmocks.Mempool{}
-	mp.On("TxStore").Return(nil)
+	mp := makeTxMempool(t, app)
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
 		app,
@@ -462,19 +426,7 @@ func TestFinalizeBlockValidatorUpdates(t *testing.T) {
 	state, stateDB, _ := makeState(t, 1, 1)
 	stateStore := sm.NewStore(stateDB)
 	blockStore := store.NewBlockStore(dbm.NewMemDB())
-	mp := &mpmocks.Mempool{}
-	mp.On("Lock").Return()
-	mp.On("Unlock").Return()
-	mp.On("Update",
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything).Return(nil)
-	mp.On("ReapMaxBytesMaxGas", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(types.Txs{})
-	mp.On("TxStore").Return(nil)
+	mp := makeTxMempool(t, app)
 
 	eventBus := eventbus.NewDefault()
 	require.NoError(t, eventBus.Start(ctx))
@@ -510,8 +462,7 @@ func TestFinalizeBlockValidatorUpdates(t *testing.T) {
 	require.NoError(t, err)
 	// test new validator was added to NextValidators
 	if assert.Equal(t, state.Validators.Size()+1, state.NextValidators.Size()) {
-		idx, _ := state.NextValidators.GetByAddress(pubkey.Address())
-		if idx < 0 {
+		if _, _, ok := state.NextValidators.GetByAddress(pubkey.Address()); !ok {
 			t.Fatalf("can't find address %v in the set %v", pubkey.Address(), state.NextValidators)
 		}
 	}
@@ -542,8 +493,7 @@ func TestFinalizeBlockValidatorUpdatesResultingInEmptySet(t *testing.T) {
 	state, stateDB, _ := makeState(t, 1, 1)
 	stateStore := sm.NewStore(stateDB)
 	blockStore := store.NewBlockStore(dbm.NewMemDB())
-	mp := &mpmocks.Mempool{}
-	mp.On("TxStore").Return(nil)
+	mp := makeTxMempool(t, app)
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
 		app,
@@ -570,247 +520,6 @@ func TestFinalizeBlockValidatorUpdatesResultingInEmptySet(t *testing.T) {
 	assert.NotEmpty(t, state.NextValidators.Validators)
 }
 
-func TestEmptyPrepareProposal(t *testing.T) {
-	const height = 2
-	ctx := t.Context()
-	var err error
-
-	eventBus := eventbus.NewDefault()
-	require.NoError(t, eventBus.Start(ctx))
-
-	app := abcimocks.NewApplication(t)
-	app.On("PrepareProposal", mock.Anything, mock.Anything).Return(&abci.ResponsePrepareProposal{}, nil)
-
-	state, stateDB, privVals := makeState(t, 1, height)
-	stateStore := sm.NewStore(stateDB)
-	mp := &mpmocks.Mempool{}
-	mp.On("Lock").Return()
-	mp.On("Unlock").Return()
-	mp.On("Update",
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything).Return(nil)
-	mp.On("ReapMaxBytesMaxGas", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(types.Txs{})
-	mp.On("TxStore").Return(nil)
-
-	blockExec := sm.NewBlockExecutor(
-		stateStore,
-		app,
-		mp,
-		sm.EmptyEvidencePool{},
-		nil,
-		eventBus,
-		sm.NopMetrics(),
-	)
-	pa, _ := state.Validators.GetByIndex(0)
-	commit, _ := makeValidCommit(ctx, t, height, types.BlockID{}, state.Validators, privVals)
-	_, err = blockExec.CreateProposalBlock(ctx, height, state, commit, pa)
-	require.NoError(t, err)
-}
-
-// TestPrepareProposalErrorOnNonExistingRemoved tests that the block creation logic returns
-// an error if the ResponsePrepareProposal returned from the application marks
-//
-//	a transaction as REMOVED that was not present in the original proposal.
-func TestPrepareProposalErrorOnNonExistingRemoved(t *testing.T) {
-	const height = 2
-	ctx := t.Context()
-
-	eventBus := eventbus.NewDefault()
-	require.NoError(t, eventBus.Start(ctx))
-
-	state, stateDB, privVals := makeState(t, 1, height)
-	stateStore := sm.NewStore(stateDB)
-
-	evpool := &mocks.EvidencePool{}
-	evpool.On("PendingEvidence", mock.Anything).Return([]types.Evidence{}, int64(0))
-
-	mp := &mpmocks.Mempool{}
-	mp.On("ReapMaxBytesMaxGas", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(types.Txs{})
-
-	app := abcimocks.NewApplication(t)
-
-	// create an invalid ResponsePrepareProposal
-	rpp := &abci.ResponsePrepareProposal{
-		TxRecords: []*abci.TxRecord{
-			{
-				Action: abci.TxRecord_UNMODIFIED,
-				Tx:     []byte("new tx"),
-			},
-		},
-	}
-	app.On("PrepareProposal", mock.Anything, mock.Anything).Return(rpp, nil)
-
-	blockExec := sm.NewBlockExecutor(
-		stateStore,
-		app,
-		mp,
-		evpool,
-		nil,
-		eventBus,
-		sm.NopMetrics(),
-	)
-	pa, _ := state.Validators.GetByIndex(0)
-	commit, _ := makeValidCommit(ctx, t, height, types.BlockID{}, state.Validators, privVals)
-	block, err := blockExec.CreateProposalBlock(ctx, height, state, commit, pa)
-	require.ErrorContains(t, err, "new transaction incorrectly marked as removed")
-	require.Nil(t, block)
-
-	mp.AssertExpectations(t)
-}
-
-// TestPrepareProposalReorderTxs tests that CreateBlock produces a block with transactions
-// in the order matching the order they are returned from PrepareProposal.
-func TestPrepareProposalReorderTxs(t *testing.T) {
-	const height = 2
-	ctx := t.Context()
-	var err error
-
-	eventBus := eventbus.NewDefault()
-	require.NoError(t, eventBus.Start(ctx))
-
-	state, stateDB, privVals := makeState(t, 1, height)
-	stateStore := sm.NewStore(stateDB)
-
-	evpool := &mocks.EvidencePool{}
-	evpool.On("PendingEvidence", mock.Anything).Return([]types.Evidence{}, int64(0))
-
-	txs := factory.MakeNTxs(height, 10)
-	mp := &mpmocks.Mempool{}
-	mp.On("ReapMaxBytesMaxGas", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(types.Txs(txs))
-
-	trs := txsToTxRecords(types.Txs(txs))
-	trs = trs[2:]
-	trs = append(trs[len(trs)/2:], trs[:len(trs)/2]...)
-
-	app := abcimocks.NewApplication(t)
-	app.On("PrepareProposal", mock.Anything, mock.Anything).Return(&abci.ResponsePrepareProposal{
-		TxRecords: trs,
-	}, nil)
-
-	blockExec := sm.NewBlockExecutor(
-		stateStore,
-		app,
-		mp,
-		evpool,
-		nil,
-		eventBus,
-		sm.NopMetrics(),
-	)
-	pa, _ := state.Validators.GetByIndex(0)
-	commit, _ := makeValidCommit(ctx, t, height, types.BlockID{}, state.Validators, privVals)
-	block, err := blockExec.CreateProposalBlock(ctx, height, state, commit, pa)
-	require.NoError(t, err)
-	for i, tx := range block.Data.Txs {
-		require.Equal(t, types.Tx(trs[i].Tx), tx)
-	}
-
-	mp.AssertExpectations(t)
-
-}
-
-// TestPrepareProposalErrorOnTooManyTxs tests that the block creation logic returns
-// an error if the ResponsePrepareProposal returned from the application is invalid.
-func TestPrepareProposalErrorOnTooManyTxs(t *testing.T) {
-	const height = 2
-	ctx := t.Context()
-	var err error
-
-	eventBus := eventbus.NewDefault()
-	require.NoError(t, eventBus.Start(ctx))
-
-	state, stateDB, privVals := makeState(t, 1, height)
-	// limit max block size
-	state.ConsensusParams.Block.MaxBytes = 60 * 1024
-	stateStore := sm.NewStore(stateDB)
-
-	evpool := &mocks.EvidencePool{}
-	evpool.On("PendingEvidence", mock.Anything).Return([]types.Evidence{}, int64(0))
-
-	const nValidators = 1
-	var bytesPerTx int64 = 3
-	maxDataBytes := types.MaxDataBytes(state.ConsensusParams.Block.MaxBytes, 0, nValidators)
-	txs := factory.MakeNTxs(height, maxDataBytes/bytesPerTx+2) // +2 so that tx don't fit
-	mp := &mpmocks.Mempool{}
-	mp.On("ReapMaxBytesMaxGas", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(types.Txs(txs))
-
-	trs := txsToTxRecords(types.Txs(txs))
-
-	app := abcimocks.NewApplication(t)
-	app.On("PrepareProposal", mock.Anything, mock.Anything).Return(&abci.ResponsePrepareProposal{
-		TxRecords: trs,
-	}, nil)
-
-	blockExec := sm.NewBlockExecutor(
-		stateStore,
-		app,
-		mp,
-		evpool,
-		nil,
-		eventBus,
-		sm.NopMetrics(),
-	)
-	pa, _ := state.Validators.GetByIndex(0)
-	commit, _ := makeValidCommit(ctx, t, height, types.BlockID{}, state.Validators, privVals)
-	block, err := blockExec.CreateProposalBlock(ctx, height, state, commit, pa)
-	require.ErrorContains(t, err, "transaction data size exceeds maximum")
-	require.Nil(t, block, "")
-
-	mp.AssertExpectations(t)
-}
-
-// TestPrepareProposalErrorOnPrepareProposalError tests when the client returns an error
-// upon calling PrepareProposal on it.
-func TestPrepareProposalErrorOnPrepareProposalError(t *testing.T) {
-	const height = 2
-	ctx := t.Context()
-	var err error
-
-	eventBus := eventbus.NewDefault()
-	require.NoError(t, eventBus.Start(ctx))
-
-	state, stateDB, privVals := makeState(t, 1, height)
-	stateStore := sm.NewStore(stateDB)
-
-	evpool := &mocks.EvidencePool{}
-	evpool.On("PendingEvidence", mock.Anything).Return([]types.Evidence{}, int64(0))
-
-	txs := factory.MakeNTxs(height, 10)
-	mp := &mpmocks.Mempool{}
-	mp.On("ReapMaxBytesMaxGas", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(types.Txs(txs))
-
-	app := &failingPrepareProposalApp{}
-
-	blockExec := sm.NewBlockExecutor(
-		stateStore,
-		app,
-		mp,
-		evpool,
-		nil,
-		eventBus,
-		sm.NopMetrics(),
-	)
-	pa, _ := state.Validators.GetByIndex(0)
-	commit, _ := makeValidCommit(ctx, t, height, types.BlockID{}, state.Validators, privVals)
-	block, err := blockExec.CreateProposalBlock(ctx, height, state, commit, pa)
-	require.Nil(t, block)
-	require.ErrorContains(t, err, "an injected error")
-
-	mp.AssertExpectations(t)
-}
-
-type failingPrepareProposalApp struct {
-	abci.BaseApplication
-}
-
-func (f failingPrepareProposalApp) PrepareProposal(context.Context, *abci.RequestPrepareProposal) (*abci.ResponsePrepareProposal, error) {
-	return nil, errors.New("an injected error")
-}
-
 func makeBlockID(hash []byte, partSetSize uint32, partSetHash []byte) types.BlockID {
 	var (
 		h   = make([]byte, crypto.HashSize)
@@ -825,81 +534,4 @@ func makeBlockID(hash []byte, partSetSize uint32, partSetHash []byte) types.Bloc
 			Hash:  psH,
 		},
 	}
-}
-
-func txsToTxRecords(txs []types.Tx) []*abci.TxRecord {
-	trs := make([]*abci.TxRecord, len(txs))
-	for i, tx := range txs {
-		trs[i] = &abci.TxRecord{
-			Action: abci.TxRecord_UNMODIFIED,
-			Tx:     tx,
-		}
-	}
-	return trs
-}
-
-// panicApp is a test app that panics during PrepareProposal to test panic recovery
-type panicApp struct {
-	abci.BaseApplication
-}
-
-func (app *panicApp) PrepareProposal(_ context.Context, req *abci.RequestPrepareProposal) (*abci.ResponsePrepareProposal, error) {
-	// This will trigger the panic recovery mechanism in CreateProposalBlock
-	panic("test panic for coverage")
-}
-
-func (app *panicApp) Info(_ context.Context, req *abci.RequestInfo) (*abci.ResponseInfo, error) {
-	return &abci.ResponseInfo{}, nil
-}
-
-func (app *panicApp) FinalizeBlock(_ context.Context, req *abci.RequestFinalizeBlock) (*abci.ResponseFinalizeBlock, error) {
-	return &abci.ResponseFinalizeBlock{}, nil
-}
-
-// TestCreateProposalBlockPanicRecovery tests that panics are recovered and converted to errors
-func TestCreateProposalBlockPanicRecovery(t *testing.T) {
-	ctx := context.Background()
-
-	// Create the panicking app
-	app := &panicApp{}
-
-	// Create test state and executor
-	state, stateDB, _ := makeState(t, 1, 1)
-	stateStore := sm.NewStore(stateDB)
-	blockStore := store.NewBlockStore(dbm.NewMemDB())
-	eventBus := eventbus.NewDefault()
-	require.NoError(t, eventBus.Start(ctx))
-	defer eventBus.Stop()
-
-	// Create mock mempool
-	mp := &mpmocks.Mempool{}
-	mp.On("ReapMaxBytesMaxGas", mock.Anything, mock.Anything, mock.Anything).Return(types.Txs{})
-
-	blockExec := sm.NewBlockExecutor(
-		stateStore,
-		app,
-		mp,
-		sm.EmptyEvidencePool{},
-		blockStore,
-		eventBus,
-		sm.NopMetrics(),
-	)
-
-	// Get proposer address
-	pa, _ := state.Validators.GetByIndex(0)
-
-	// Create commit
-	lastCommit := &types.Commit{}
-
-	// This should trigger the panic recovery mechanism
-	block, err := blockExec.CreateProposalBlock(ctx, 1, state, lastCommit, pa)
-
-	// Verify that panic was caught and converted to error
-	assert.Nil(t, block, "Block should be nil when panic is recovered")
-	assert.Error(t, err, "Should return error when panic is recovered")
-	assert.Contains(t, err.Error(), "CreateProposalBlock panic recovered", "Error should indicate panic recovery")
-	assert.Contains(t, err.Error(), "test panic for coverage", "Error should contain original panic message")
-
-	// Verify mock expectations
-	mp.AssertExpectations(t)
 }
