@@ -1,0 +1,80 @@
+2026-04-25T06:25:33Z INFO Started EVM RPC metrics exporter (interval: 5s) db_semaphore=4 debug_stdout=false module=evmrpc queue=1000 workers=4
+2026-04-25T06:25:33Z INFO To enable debug metrics output to stdout, set EVM_DEBUG_METRICS=true module=evmrpc
+2026-04-25T06:25:33Z INFO stats tracker started conn_type=http interval=10s module=evmrpc
+2026-04-25T06:25:33Z INFO Disabling Test EVM APIs enableTestAPI=false liveChainID=false module=evmrpc
+2026-04-25T06:25:33Z INFO Registering apis for evm rpc module=evmrpc
+2026-04-25T06:25:33Z INFO [Debug] Registering deny list for evm rpc:[] module=evmrpc
+2026-04-25T06:25:33Z INFO HTTP server started auth=false cors=* endpoint={"IP":"::","Port":7777,"Zone":""} module=evmrpc prefix= vhosts=*
+2026-04-25T06:25:33Z INFO Started EVM RPC metrics exporter (interval: 5s) db_semaphore=4 debug_stdout=false module=evmrpc queue=1000 workers=4
+2026-04-25T06:25:33Z INFO To enable debug metrics output to stdout, set EVM_DEBUG_METRICS=true module=evmrpc
+2026-04-25T06:25:33Z INFO stats tracker started conn_type=http interval=10s module=evmrpc
+2026-04-25T06:25:33Z INFO Disabling Test EVM APIs enableTestAPI=false liveChainID=false module=evmrpc
+2026-04-25T06:25:33Z INFO Registering apis for evm rpc module=evmrpc
+2026-04-25T06:25:33Z INFO [Debug] Registering deny list for evm rpc:[] module=evmrpc
+2026-04-25T06:25:33Z INFO HTTP server started auth=false cors=* endpoint={"IP":"::","Port":7779,"Zone":""} module=evmrpc prefix= vhosts=*
+2026-04-25T06:25:33Z INFO Started EVM RPC metrics exporter (interval: 5s) db_semaphore=4 debug_stdout=false module=evmrpc queue=1000 workers=4
+2026-04-25T06:25:33Z INFO To enable debug metrics output to stdout, set EVM_DEBUG_METRICS=true module=evmrpc
+2026-04-25T06:25:33Z INFO Disabling Test EVM APIs enableTestAPI=false liveChainID=false module=evmrpc
+2026-04-25T06:25:33Z INFO Registering apis for evm rpc module=evmrpc
+2026-04-25T06:25:33Z INFO stats tracker started conn_type=http interval=10s module=evmrpc
+2026-04-25T06:25:33Z INFO [Debug] Registering deny list for evm rpc:[] module=evmrpc
+2026-04-25T06:25:33Z INFO HTTP server started auth=false cors=* endpoint={"IP":"::","Port":7780,"Zone":""} module=evmrpc prefix= vhosts=*
+2026-04-25T06:25:33Z INFO Started EVM RPC metrics exporter (interval: 5s) db_semaphore=4 debug_stdout=false module=evmrpc queue=1000 workers=4
+2026-04-25T06:25:33Z INFO To enable debug metrics output to stdout, set EVM_DEBUG_METRICS=true module=evmrpc
+2026-04-25T06:25:33Z INFO Disabling Test EVM APIs enableTestAPI=false liveChainID=false module=evmrpc
+2026-04-25T06:25:33Z INFO Registering apis for evm rpc module=evmrpc
+2026-04-25T06:25:33Z INFO stats tracker started conn_type=http interval=10s module=evmrpc
+2026-04-25T06:25:33Z INFO [Debug] Registering deny list for evm rpc:[] module=evmrpc
+2026-04-25T06:25:33Z INFO HTTP server started auth=false cors=* endpoint={"IP":"::","Port":7782,"Zone":""} module=evmrpc prefix= vhosts=*
+2026-04-25T06:25:33Z INFO Registering apis for evm websocket module=evmrpc
+2026-04-25T06:25:33Z INFO WebSocket enabled module=evmrpc url=ws://[::]:7778
+wsServer started with config = {HTTPEnabled:true HTTPPort:7777 WSEnabled:true WSPort:7778 ReadTimeout:30s ReadHeaderTimeout:30s WriteTimeout:30s IdleTimeout:2m0s SimulationGasLimit:10000000 SimulationEVMTimeout:1m0s CORSOrigins:* WSOrigins:* FilterTimeout:500ms CheckTxTimeout:5s MaxTxPoolTxs:1000 Slow:false DenyList:[] MaxLogNoBlock:10 MaxBlocksForLog:2000 MaxSubscriptionsNewHead:10000 EnableTestAPI:false MaxConcurrentTraceCalls:10 MaxConcurrentSimulationCalls:2 MaxTraceLookbackBlocks:10000 TraceTimeout:30s RPCStatsInterval:10s WorkerPoolSize:4 WorkerQueueSize:1000}
+2026-04-25T06:25:33Z INFO stats tracker started conn_type=ws interval=10s module=evmrpc
+MOCK RECEIPT height=8, tx=0xa16d8f7ea8741acd23f15fc19b0dd26512aff68c01c6260d7c3a51b297399d32
+MOCK RECEIPT height=8, tx=0xda6ea0740588d48d21329c621c4c5ec004eddbbe9e3a8e564a4a1c278e9e7737
+MOCK RECEIPT height=2, tx=0xdeca026e9367f91bf7f782a768e4f4b323980302e8360e6f713caf9ae833dbef
+MOCK RECEIPT height=2, tx=0x2188eb3d2fe86a56a4aafb7f281bd3d55250ea45a193f08c2b40f7e6863f5233
+MOCK RECEIPT height=2, tx=0x96dacdcecd55793a13791ed51cca3722b085f7f9eff79005cd5118820672204e
+MOCK RECEIPT height=8, tx=0x8239b07911106797e7b82b7c2e98d801da964b657c847d8954fce1d79204c696
+MOCK RECEIPT height=8, tx=0x6d00da2e2e2b08007da43bf6c16a6e7ce470460a18b086cdc829f94e35f21bf7
+MOCK RECEIPT height=100, tx=0x3b60596187f22b17dd0452b8b93d718418b8b868be5e296b42d9998d25f7132a
+MOCK RECEIPT height=103, tx=0xcc116a2dc5e01b14c297d07ed5de81f41507cca188d1bf6aff4e2732e6a3132e
+MOCK RECEIPT height=8, tx=0xa16d8f7ea8741acd23f15fc19b0dd26512aff68c01c6260d7c3a51b297399d32
+MOCK RECEIPT height=103, tx=0x376201ffbb2f6e9a0b4ade3dfe6d90d536aedd3bf3e6522ae93b41d6bcd4f12d
+MOCK RECEIPT height=103, tx=0x5d5f69325c86b01562e11aaff42212739dd978b489fe8f7cbabf5e176daaed6b
+MOCK RECEIPT height=2, tx=0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+goos: linux
+goarch: amd64
+pkg: github.com/sei-protocol/sei-chain/evmrpc
+cpu: AMD EPYC 7763 64-Core Processor                
+BenchmarkWorkerPoolThroughput
+BenchmarkWorkerPoolThroughput/small
+2026-04-25T06:25:43Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:25:40Z
+2026-04-25T06:25:43Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:25:40Z
+2026-04-25T06:25:43Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:25:40Z
+2026-04-25T06:25:43Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:25:40Z
+2026-04-25T06:25:43Z INFO stats conn_type=ws count=0 interval=10s module=evmrpc period=2026-04-25T06:25:40Z
+BenchmarkWorkerPoolThroughput/small-80         	21087129	       578.0 ns/op
+BenchmarkWorkerPoolThroughput/medium
+2026-04-25T06:25:53Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:25:50Z
+2026-04-25T06:25:53Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:25:50Z
+2026-04-25T06:25:53Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:25:50Z
+2026-04-25T06:25:53Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:25:50Z
+2026-04-25T06:25:53Z INFO stats conn_type=ws count=0 interval=10s module=evmrpc period=2026-04-25T06:25:50Z
+BenchmarkWorkerPoolThroughput/medium-80        	20969178	       557.1 ns/op
+BenchmarkWorkerPoolThroughput/large
+2026-04-25T06:26:03Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:26:00Z
+2026-04-25T06:26:03Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:26:00Z
+2026-04-25T06:26:03Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:26:00Z
+2026-04-25T06:26:03Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:26:00Z
+2026-04-25T06:26:03Z INFO stats conn_type=ws count=0 interval=10s module=evmrpc period=2026-04-25T06:26:00Z
+BenchmarkWorkerPoolThroughput/large-80         	17550819	       661.9 ns/op
+BenchmarkWorkerPoolThroughput/xlarge
+2026-04-25T06:26:13Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:26:10Z
+2026-04-25T06:26:13Z INFO stats conn_type=ws count=0 interval=10s module=evmrpc period=2026-04-25T06:26:10Z
+2026-04-25T06:26:13Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:26:10Z
+2026-04-25T06:26:13Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:26:10Z
+2026-04-25T06:26:13Z INFO stats conn_type=http count=0 interval=10s module=evmrpc period=2026-04-25T06:26:10Z
+BenchmarkWorkerPoolThroughput/xlarge-80        	16268770	       625.5 ns/op
+PASS
+ok  	github.com/sei-protocol/sei-chain/evmrpc	53.559s
