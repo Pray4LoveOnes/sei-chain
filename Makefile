@@ -6,7 +6,7 @@
 # - Prefer tag if bases are equal; otherwise use whichever base is newer.
 BRANCH_NAME := $(shell git rev-parse --abbrev-ref HEAD)
 BRANCH_VERSION := $(shell echo "$(BRANCH_NAME)" | sed -E -n 's|.*(v[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9._]*).*|\1|p')
-TAG_VERSION := $(shell echo $(shell git describe --tags))
+TAG_VERSION := $(shell echo $(shell git describe --tags 2>/dev/null))
 VERSION := $(shell \
 	bv="$(BRANCH_VERSION)"; tv="$(TAG_VERSION)"; \
 	bb=$$(echo "$$bv" | sed 's/^\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/'); \
@@ -20,7 +20,11 @@ COMMIT := $(shell git log -1 --format='%H')
 BUILDDIR ?= $(CURDIR)/build
 INVARIANT_CHECK_INTERVAL ?= $(INVARIANT_CHECK_INTERVAL:-0)
 export PROJECT_HOME=$(shell git rev-parse --show-toplevel)
-export GO_PKG_PATH=$(HOME)/go/pkg
+# Parent of the Go module cache. Derived from `go env GOMODCACHE` so that the
+# container/compose mounts (`$(GO_PKG_PATH)/mod`) follow a relocated GOMODCACHE
+# (e.g. CI pointing it at /mnt) the same way the GOCACHE mounts follow
+# `go env GOCACHE`. Defaults to $HOME/go/pkg when GOMODCACHE is unset.
+export GO_PKG_PATH=$(shell dirname $(shell go env GOMODCACHE))
 export GO111MODULE = on
 
 # process build tags
@@ -73,7 +77,10 @@ ifeq ($(firstword $(sort go1.23 $(shell go env GOVERSION))), go1.23)
 	ldflags += -checklinkname=0
 endif
 ifeq ($(LINK_STATICALLY),true)
-	ldflags += -linkmode=external -extldflags "-Wl,-z,muldefs -static"
+	# STATIC_EXTRA_LDFLAGS lets the static build inject linker search paths, e.g.
+	# scripts/build-static.sh points it at the pinned pre-gcc-12 libgcc (see
+	# third_party/alpine-gcc10-libgcc/README.md).
+	ldflags += -linkmode=external -extldflags "-Wl,-z,muldefs -static $(STATIC_EXTRA_LDFLAGS)"
 endif
 ldflags += $(LDFLAGS)
 ldflags := $(strip $(ldflags))
@@ -225,18 +232,18 @@ build-docker-node:
 .PHONY: build-docker-node
 
 build-rpc-node:
-	@cd docker && docker build --tag sei-chain/rpcnode rpcnode --platform linux/x86_64
+	@cd docker && docker build --tag sei-chain/rpcnode rpcnode --platform $(DOCKER_PLATFORM)
 .PHONY: build-rpc-node
 
-# Integration-test CI: verify images loaded from prepare-cluster artifacts.
+# Integration-test CI: verify images pulled from GHCR by the matrix job.
 ensure-integration-ci-images:
-	@docker image inspect sei-chain/localnode >/dev/null 2>&1 || (echo "sei-chain/localnode image missing; load integration-docker-images.tar.zst from prepare-cluster" && exit 1)
-	@docker image inspect sei-chain/rpcnode >/dev/null 2>&1 || (echo "sei-chain/rpcnode image missing; load integration-docker-images.tar.zst from prepare-cluster" && exit 1)
+	@docker image inspect sei-chain/localnode >/dev/null 2>&1 || (echo "sei-chain/localnode image missing; pull from GHCR (see prepare-cluster job)" && exit 1)
+	@docker image inspect sei-chain/rpcnode >/dev/null 2>&1 || (echo "sei-chain/rpcnode image missing; pull from GHCR (see prepare-cluster job)" && exit 1)
 .PHONY: ensure-integration-ci-images
 
 # Build seid once inside the localnode image (integration-test prepare job).
 build-seid-in-localnode: build-docker-node
-	@mkdir -p build $(shell go env GOPATH)/pkg/mod $(shell go env GOCACHE)
+	@mkdir -p build $(shell go env GOMODCACHE) $(shell go env GOCACHE)
 	@docker run --rm \
 		--user="$(shell id -u):$(shell id -g)" \
 		-v $(PROJECT_HOME):/sei-protocol/sei-chain:Z \
@@ -251,7 +258,7 @@ build-seid-in-localnode: build-docker-node
 
 # CI variant: assumes localnode image already built by Buildx in prepare-cluster (skips docker build).
 build-seid-in-localnode-ci: ensure-integration-ci-images
-	@mkdir -p build $(shell go env GOPATH)/pkg/mod $(shell go env GOCACHE)
+	@mkdir -p build $(shell go env GOMODCACHE) $(shell go env GOCACHE)
 	@docker run --rm \
 		--user="$(shell id -u):$(shell id -g)" \
 		-v $(PROJECT_HOME):/sei-protocol/sei-chain:Z \
@@ -279,7 +286,7 @@ run-local-node: kill-sei-node build-docker-node
 	-v $(PROJECT_HOME):/sei-protocol/sei-chain:Z \
 	-v $(GO_PKG_PATH)/mod:/root/go/pkg/mod:Z \
 	-v $(shell go env GOCACHE):/root/.cache/go-build:Z \
-	--platform linux/x86_64 \
+	--platform $(DOCKER_PLATFORM) \
 	sei-chain/localnode
 .PHONY: run-local-node
 
@@ -296,9 +303,11 @@ run-rpc-node: build-rpc-node
 	-v $(GO_PKG_PATH)/mod:/root/go/pkg/mod:Z \
 	-v $(shell go env GOCACHE):/root/.cache/go-build:Z \
 	-p 26668-26670:26656-26658 \
-	--platform linux/x86_64 \
+	--platform $(DOCKER_PLATFORM) \
 	--env GIGA_STORAGE=${GIGA_STORAGE} \
 	--env GIGA_FLATKV_ONLY=${GIGA_FLATKV_ONLY} \
+	--env AUTOBAHN=${AUTOBAHN} \
+	--env CLUSTER_SIZE=${CLUSTER_SIZE} \
 	--env RECEIPT_BACKEND=${RECEIPT_BACKEND} \
 	sei-chain/rpcnode
 .PHONY: run-rpc-node
@@ -315,10 +324,12 @@ run-rpc-node-skipbuild: build-rpc-node
 	-v $(GO_PKG_PATH)/mod:/root/go/pkg/mod:Z \
 	-v $(shell go env GOCACHE):/root/.cache/go-build:Z \
 	-p 26668-26670:26656-26658 \
-	--platform linux/x86_64 \
+	--platform $(DOCKER_PLATFORM) \
 	--env SKIP_BUILD=true \
 	--env GIGA_STORAGE=${GIGA_STORAGE} \
 	--env GIGA_FLATKV_ONLY=${GIGA_FLATKV_ONLY} \
+	--env AUTOBAHN=${AUTOBAHN} \
+	--env CLUSTER_SIZE=${CLUSTER_SIZE} \
 	--env RECEIPT_BACKEND=${RECEIPT_BACKEND} \
 	sei-chain/rpcnode
 .PHONY: run-rpc-node
@@ -345,7 +356,7 @@ run-rpc-node-integration-ci: kill-rpc-node ensure-integration-ci-images
 	-v $(GO_PKG_PATH)/mod:/root/go/pkg/mod:Z \
 	-v $(shell go env GOCACHE):/root/.cache/go-build:Z \
 	-p 26668-26670:26656-26658 \
-	--platform linux/x86_64 \
+	--platform $(DOCKER_PLATFORM) \
 	--env SKIP_BUILD=true \
 	--env GIGA_STORAGE=${GIGA_STORAGE} \
 	--env GIGA_FLATKV_ONLY=${GIGA_FLATKV_ONLY} \
@@ -375,7 +386,7 @@ CLUSTER_ENV_VARS = DOCKER_PLATFORM=$(DOCKER_PLATFORM) USERID=$(shell id -u) GROU
 # Run a 4-node docker containers
 docker-cluster-start: docker-cluster-stop build-docker-node
 	@rm -rf $(PROJECT_HOME)/build/generated
-	@mkdir -p $(shell go env GOPATH)/pkg/mod
+	@mkdir -p $(shell go env GOMODCACHE)
 	@mkdir -p $(shell go env GOCACHE)
 	@cd docker && \
 		if [ "$${DOCKER_DETACH:-}" = "true" ]; then \
@@ -403,7 +414,7 @@ docker-cluster-start-skipbuild: docker-cluster-stop build-docker-node
 docker-cluster-start-ci: docker-cluster-stop ensure-integration-ci-images
 	@rm -rf $(PROJECT_HOME)/build/generated
 	@test -f $(PROJECT_HOME)/build/seid || (echo "build/seid missing; download integration-build.tar.gz from prepare-cluster" && exit 1)
-	@mkdir -p $(shell go env GOPATH)/pkg/mod
+	@mkdir -p $(shell go env GOMODCACHE)
 	@mkdir -p $(shell go env GOCACHE)
 	@cd docker && \
 		if [ "$${DOCKER_DETACH:-}" = "true" ]; then \
@@ -422,7 +433,7 @@ docker-cluster-stop:
 # Start 4-node cluster with Prometheus and Grafana monitoring
 docker-cluster-start-monitoring: docker-cluster-stop-monitoring build-docker-node
 	@rm -rf $(PROJECT_HOME)/build/generated
-	@mkdir -p $(shell go env GOPATH)/pkg/mod
+	@mkdir -p $(shell go env GOMODCACHE)
 	@mkdir -p $(shell go env GOCACHE)
 	@cd docker && \
 		if [ "$${DOCKER_DETACH:-}" = "true" ]; then \
@@ -484,7 +495,7 @@ autobahn-integration-test:
 # Any determinism divergence between giga and V2 will cause the giga node to halt.
 docker-cluster-start-giga-mixed: docker-cluster-stop build-docker-node
 	@rm -rf $(PROJECT_HOME)/build/generated
-	@mkdir -p $(shell go env GOPATH)/pkg/mod
+	@mkdir -p $(shell go env GOMODCACHE)
 	@mkdir -p $(shell go env GOCACHE)
 	@cd docker && \
 		if [ "$${DOCKER_DETACH:-}" = "true" ]; then \

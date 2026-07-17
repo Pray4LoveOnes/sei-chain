@@ -6,16 +6,19 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof" // nolint: gosec // securely exposed on separate, optional port
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/protobuf/proto"
 
+	atypes "github.com/sei-protocol/sei-chain/sei-tendermint/autobahn/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/config"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/crypto"
-	atypes "github.com/sei-protocol/sei-chain/sei-tendermint/internal/autobahn/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/blocksync"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/consensus"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/eventbus"
@@ -44,6 +47,41 @@ import (
 	_ "github.com/lib/pq" // provide the psql db driver
 )
 
+type chainIDGatherer struct{ chainID string }
+
+func (g chainIDGatherer) Gather() ([]*dto.MetricFamily, error) {
+	metricFamilies, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		return nil, err
+	}
+	for _, metricFamily := range metricFamilies {
+		for _, metric := range metricFamily.Metric {
+			if hasMetricLabel(metric, "chain_id") {
+				continue
+			}
+			labels := slices.Clone(metric.Label)
+			labels = append(labels, &dto.LabelPair{
+				Name:  proto.String("chain_id"),
+				Value: proto.String(g.chainID),
+			})
+			slices.SortFunc(labels, func(a, b *dto.LabelPair) int {
+				return strings.Compare(a.GetName(), b.GetName())
+			})
+			metric.Label = labels
+		}
+	}
+	return metricFamilies, nil
+}
+
+func hasMetricLabel(metric *dto.Metric, name string) bool {
+	for _, label := range metric.GetLabel() {
+		if label.GetName() == name {
+			return true
+		}
+	}
+	return false
+}
+
 // nodeImpl is the highest level interface to a full Tendermint node.
 // It includes all configuration information and running services.
 type nodeImpl struct {
@@ -58,6 +96,7 @@ type nodeImpl struct {
 
 	// network
 	router           *p2p.Router
+	giga             utils.Option[p2p.GigaRouter]
 	ServiceRestartCh utils.Option[chan []string]
 	nodeInfo         types.NodeInfo
 	nodeKey          types.NodeKey // our node privkey
@@ -88,7 +127,6 @@ func makeNode(
 	genesisDocProvider genesisDocProvider,
 	dbProvider config.DBProvider,
 	tracerProviderOptions []trace.TracerProviderOption,
-	nodeMetrics *NodeMetrics,
 	consensusPolicy types.ConsensusPolicy,
 ) (_ local.NodeService, err error) {
 	var cancel context.CancelFunc
@@ -129,7 +167,6 @@ func makeNode(
 		eventLog, err = eventlog.New(eventlog.LogSettings{
 			WindowSize: w,
 			MaxItems:   cfg.RPC.EventLogMaxItems,
-			Metrics:    nodeMetrics.eventlog,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("initializing event log: %w", err)
@@ -142,7 +179,6 @@ func makeNode(
 	indexerService := indexer.NewService(indexer.ServiceArgs{
 		Sinks:    eventSinks,
 		EventBus: eventBus,
-		Metrics:  nodeMetrics.indexer,
 	})
 
 	privValidator, err := createPrivval(ctx, cfg, genDoc, filePrivval)
@@ -192,16 +228,18 @@ func makeNode(
 		},
 	}
 
-	// Autobahn requires a local validator key; remote signers are not supported.
-	if cfg.AutobahnConfigFile != "" && cfg.PrivValidator.ListenAddr != "" {
-		return nil, fmt.Errorf("autobahn does not support remote validator signers (priv-validator.laddr is set)")
-	}
 	gigaEnabled := cfg.AutobahnConfigFile != ""
+	// Pass the local key when autobahn is on; setup.go's
+	// buildGigaRouter picks validator-vs-fullnode by cfg.Mode and
+	// uses the key to check that a validator-mode node is in the committee.
+	gigaValidatorKey := utils.None[atypes.SecretKey]()
+	if gigaEnabled {
+		gigaValidatorKey = utils.Some(atypes.SecretKeyFromED25519(filePrivval.Key.PrivKey))
+	}
 	router, peerCloser, err := createRouter(
-		nodeMetrics.p2p,
 		node.NodeInfo,
 		nodeKey,
-		utils.Some(atypes.SecretKeyFromED25519(filePrivval.Key.PrivKey)),
+		gigaValidatorKey,
 		cfg,
 		utils.Some(proxyApp),
 		genDoc,
@@ -212,10 +250,11 @@ func makeNode(
 		return nil, fmt.Errorf("failed to create router: %w", err)
 	}
 	node.router = router
+	node.giga = router.Giga()
 	node.rpcEnv.Router = router
 
 	evReactor, evPool, edbCloser, err := createEvidenceReactor(cfg, dbProvider,
-		stateStore, blockStore, node.router, nodeMetrics.evidence, eventBus)
+		stateStore, blockStore, node.router, eventBus)
 	closers = append(closers, edbCloser)
 	if err != nil {
 		return nil, fmt.Errorf("createEvidenceReactor(): %w", err)
@@ -236,7 +275,7 @@ func makeNode(
 	}
 
 	if !gigaEnabled {
-		mp := mempool.NewTxMempool(cfg.Mempool.ToMempoolConfig(), proxyApp, nodeMetrics.mempool, sm.TxConstraintsFetcherFromStore(stateStore))
+		mp := mempool.NewTxMempool(cfg.Mempool.ToMempoolConfig(), proxyApp, sm.TxConstraintsFetcherFromStore(stateStore))
 		node.mempool = utils.Some(mp)
 		node.rpcEnv.Mempool = utils.Some(mp)
 		mpReactor, err := mempoolreactor.NewReactor(cfg.Mempool, mp, router)
@@ -254,7 +293,6 @@ func makeNode(
 			evPool,
 			blockStore,
 			eventBus,
-			nodeMetrics.state,
 			consensusPolicy,
 		)
 
@@ -287,7 +325,6 @@ func makeNode(
 			evPool,
 			eventBus,
 			tracerProviderOptions,
-			nodeMetrics.consensus,
 		)
 		node.rpcEnv.ConsensusState = utils.Some[rpccore.ConsensusState](csState)
 
@@ -296,7 +333,6 @@ func makeNode(
 			node.router,
 			eventBus,
 			waitSync,
-			nodeMetrics.consensus,
 			cfg,
 		)
 		if err != nil {
@@ -316,7 +352,6 @@ func makeNode(
 				BlockExec:             blockExec,
 				ConsReactor:           utils.Some[blocksync.ConsensusReactor](csReactor),
 				BlockSync:             blockSync && !stateSync,
-				Metrics:               nodeMetrics.consensus,
 				EventBus:              eventBus,
 				RestartEvent:          restartEvent,
 				SelfRemediationConfig: cfg.SelfRemediation,
@@ -331,9 +366,9 @@ func makeNode(
 		// Make ConsensusReactor. Don't enable fully if doing a state sync and/or block sync first.
 		// FIXME We need to update metrics here, since other reactors don't have access to them.
 		if stateSync {
-			nodeMetrics.consensus.StateSyncing.Set(1)
+			consensus.Global.StateSyncingAt().Set(1)
 		} else if blockSync {
-			nodeMetrics.consensus.BlockSyncing.Set(1)
+			consensus.Global.BlockSyncingAt().Set(1)
 		}
 
 		postSyncHook := func(ctx context.Context, state sm.State) error {
@@ -373,7 +408,6 @@ func makeNode(
 			stateStore,
 			blockStore,
 			cfg.StateSync.TempDir,
-			nodeMetrics.statesync,
 			eventBus,
 			// the post-sync operation
 			postSyncHook,
@@ -521,6 +555,12 @@ func (n *nodeImpl) OnStart(ctx context.Context) error {
 	if m, ok := n.mempool.Get(); ok {
 		n.SpawnCritical("mempool", m.Run)
 	}
+	// Run the GigaRouter alongside the transport. n.giga is the canonical
+	// reference; the Router holds a copy only for its own internal use
+	// (dispatching inbound giga connections). Lifecycle is owned here.
+	if giga, ok := n.giga.Get(); ok {
+		n.SpawnCritical("giga", giga.Run)
+	}
 
 	for _, reactor := range n.services {
 		if err := reactor.Start(ctx); err != nil {
@@ -598,11 +638,15 @@ func (n *nodeImpl) OnStop() {
 // startPrometheusServer starts a Prometheus HTTP server, listening for metrics
 // collectors on addr.
 func (n *nodeImpl) startPrometheusServer(ctx context.Context, addr string) *http.Server {
+	gatherer := chainIDGatherer{
+		chainID: n.genesisDoc.ChainID,
+	}
+
 	srv := &http.Server{
 		Addr: addr,
 		Handler: promhttp.InstrumentMetricHandler(
 			prometheus.DefaultRegisterer, promhttp.HandlerFor(
-				prometheus.DefaultGatherer,
+				gatherer,
 				promhttp.HandlerOpts{MaxRequestsInFlight: n.config.Instrumentation.MaxOpenConnections},
 			),
 		),
@@ -663,57 +707,6 @@ func defaultGenesisDocProviderFunc(cfg *config.Config) genesisDocProvider {
 		return types.GenesisDocFromFile(cfg.GenesisFile())
 	}
 }
-
-type NodeMetrics struct {
-	consensus *consensus.Metrics
-	eventlog  *eventlog.Metrics
-	indexer   *indexer.Metrics
-	mempool   *mempool.Metrics
-	p2p       *p2p.Metrics
-	proxy     *proxy.Metrics
-	state     *sm.Metrics
-	statesync *statesync.Metrics
-	evidence  *evidence.Metrics
-}
-
-// metricsProvider returns consensus, p2p, mempool, state, statesync Metrics.
-type metricsProvider func(chainID string) *NodeMetrics
-
-func NoOpMetricsProvider() *NodeMetrics {
-	return &NodeMetrics{
-		consensus: consensus.NopMetrics(),
-		indexer:   indexer.NopMetrics(),
-		mempool:   mempool.NopMetrics(),
-		p2p:       p2p.NopMetrics(),
-		proxy:     proxy.NopMetrics(),
-		state:     sm.NopMetrics(),
-		statesync: statesync.NopMetrics(),
-		evidence:  evidence.NopMetrics(),
-	}
-}
-
-// defaultMetricsProvider returns Metrics build using Prometheus client library
-// if Prometheus is enabled. Otherwise, it returns no-op Metrics.
-func DefaultMetricsProvider(cfg *config.InstrumentationConfig) metricsProvider {
-	return func(chainID string) *NodeMetrics {
-		if cfg.Prometheus {
-			return &NodeMetrics{
-				consensus: consensus.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-				eventlog:  eventlog.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-				indexer:   indexer.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-				mempool:   mempool.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-				p2p:       p2p.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-				proxy:     proxy.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-				state:     sm.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-				statesync: statesync.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-				evidence:  evidence.PrometheusMetrics(cfg.Namespace, "chain_id", chainID),
-			}
-		}
-		return NoOpMetricsProvider()
-	}
-}
-
-//------------------------------------------------------------------------------
 
 // LoadStateFromDBOrGenesisDocProvider attempts to load the state from the
 // database, or creates one using the given genesisDocProvider. On success this also

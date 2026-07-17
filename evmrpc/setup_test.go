@@ -31,6 +31,7 @@ import (
 	sdkerrors "github.com/sei-protocol/sei-chain/sei-cosmos/types/errors"
 	abci "github.com/sei-protocol/sei-chain/sei-tendermint/abci/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/bytes"
+	tmutils "github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils"
 	types2 "github.com/sei-protocol/sei-chain/sei-tendermint/proto/tendermint/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/rpc/client/mock"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/rpc/coretypes"
@@ -117,7 +118,7 @@ var TxNonEvm sdk.Tx
 var TxNonEvmWithSyntheticLog sdk.Tx
 var UnconfirmedTx sdk.Tx
 
-var SConfig = evmrpc.SimulateConfig{GasCap: 10000000}
+var SConfig = evmrpc.SimulateConfig{GasCap: 10000000, MaxStateOverrideAccounts: 100, MaxStateOverrideSlots: 1000}
 
 var filterTimeoutDuration = 500 * time.Millisecond
 var TotalTxCount int = 11
@@ -158,8 +159,8 @@ func (*MockClient) EvmTxByHash(hash common.Hash) (tmtypes.Tx, bool) {
 	return tx, true
 }
 
-func (*MockClient) EvmProxy(common.Address) (*url.URL, bool) {
-	return nil, false
+func (*MockClient) EvmProxy(common.Address) tmutils.Option[*url.URL] {
+	return tmutils.None[*url.URL]()
 }
 
 func NewMockClientWithLatest(latest int64) *MockClient {

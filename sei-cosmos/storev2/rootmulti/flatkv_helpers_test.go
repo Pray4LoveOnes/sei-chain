@@ -33,6 +33,16 @@ func withTestMemIAVL(cfg seidbconfig.StateCommitConfig) seidbconfig.StateCommitC
 	cfg.MemIAVLConfig.SnapshotInterval = 1
 	cfg.MemIAVLConfig.SnapshotMinTimeInterval = 0
 	cfg.MemIAVLConfig.AsyncCommitBuffer = 0
+	// Snapshotting every block (interval 1) combined with the default
+	// keep-recent of 1 would prune all but the two newest snapshots. FlatKV,
+	// which mirrors this cadence, needs a retained snapshot at-or-below the
+	// rollback target to reconstruct that version, so aggressive pruning would
+	// make the rollback/recovery tests unable to target older versions. In
+	// production (interval 10000) a small rollback always lands within a
+	// retained interval; here we retain all snapshots across the small test
+	// version ranges to model that guarantee. Tests that specifically exercise
+	// pruning override this explicitly.
+	cfg.MemIAVLConfig.SnapshotKeepRecent = 1000
 	cfg.HistoricalProofRateLimit = 0
 	cfg.HistoricalProofMaxInFlight = 100
 	return cfg
@@ -40,19 +50,19 @@ func withTestMemIAVL(cfg seidbconfig.StateCommitConfig) seidbconfig.StateCommitC
 
 func dualWriteConfig() seidbconfig.StateCommitConfig {
 	cfg := seidbconfig.DefaultStateCommitConfig()
-	cfg.WriteMode = seidbconfig.TestOnlyDualWrite
+	cfg.WriteMode = sctypes.TestOnlyDualWrite
 	return withTestMemIAVL(cfg)
 }
 
 func evmMigratedConfig() seidbconfig.StateCommitConfig {
 	cfg := seidbconfig.DefaultStateCommitConfig()
-	cfg.WriteMode = seidbconfig.EVMMigrated
+	cfg.WriteMode = sctypes.EVMMigrated
 	return withTestMemIAVL(cfg)
 }
 
 func flatKVOnlyConfig() seidbconfig.StateCommitConfig {
 	cfg := seidbconfig.DefaultStateCommitConfig()
-	cfg.WriteMode = seidbconfig.FlatKVOnly
+	cfg.WriteMode = sctypes.FlatKVOnly
 	return withTestMemIAVL(cfg)
 }
 
@@ -62,22 +72,19 @@ func flatKVOnlyConfig() seidbconfig.StateCommitConfig {
 // MigrateEVM at restart.
 func memiavlOnlyConfig() seidbconfig.StateCommitConfig {
 	cfg := seidbconfig.DefaultStateCommitConfig()
-	cfg.WriteMode = seidbconfig.MemiavlOnly
+	cfg.WriteMode = sctypes.MemiavlOnly
 	return withTestMemIAVL(cfg)
 }
 
 // migrateEVMConfig returns the MigrateEVM config used by phase 2 of the
-// FlatKV EVM migrate tests. keysPerBlock caps the per-block migration batch
-// so callers can deterministically spread the boundary across multiple
-// commits without having to count source keys themselves; a small value
-// (e.g. 4) reliably keeps the migration in flight long enough to cover
-// the resume / determinism assertions, while a large value (e.g. 1024)
-// is the production-equivalent that drains the boundary in one or two
-// blocks.
-func migrateEVMConfig(keysPerBlock int) seidbconfig.StateCommitConfig {
+// FlatKV EVM migrate tests. The per-block migration batch is no longer part
+// of the config; callers set it after constructing the store via
+// store.SetMigrationBatchSize so a small value (e.g. 4) keeps the migration
+// in flight across the resume / determinism assertions, while a large value
+// drains the boundary in one or two blocks.
+func migrateEVMConfig() seidbconfig.StateCommitConfig {
 	cfg := seidbconfig.DefaultStateCommitConfig()
-	cfg.WriteMode = seidbconfig.MigrateEVM
-	cfg.KeysToMigratePerBlock = keysPerBlock
+	cfg.WriteMode = sctypes.MigrateEVM
 	return withTestMemIAVL(cfg)
 }
 
@@ -348,6 +355,12 @@ func openFlatKVReadOnly(t *testing.T, dir string, cfg seidbconfig.StateCommitCon
 	require.NoError(t, err)
 	ro, err := store.LoadVersion(version, true)
 	require.NoError(t, err)
+	// Close the parent immediately: the returned read-only view owns an
+	// independent context and resources, so it must survive the parent's
+	// teardown. This doubles as a regression guard — if the clone is ever
+	// re-rooted at the parent's context, cold reads on ro (those that miss the
+	// warm cache and hit the async pebble loader) will fail with "context
+	// canceled".
 	require.NoError(t, store.Close())
 	return ro
 }
@@ -470,9 +483,9 @@ func addFlatKVNodeToMap(t *testing.T, out map[string][]byte, node *sctypes.Snaps
 		require.NoErrorf(t, err, "deserialize CodeData for key %x", node.Key)
 		out[string(bytes.Clone(innerKey))] = bytes.Clone(cd.GetBytecode())
 
-	case keys.EVMKeyLegacy:
-		ld, err := vtype.DeserializeLegacyData(node.Value)
-		require.NoErrorf(t, err, "deserialize LegacyData for key %x", node.Key)
+	case keys.EVMKeyMisc:
+		ld, err := vtype.DeserializeMiscData(node.Value)
+		require.NoErrorf(t, err, "deserialize MiscData for key %x", node.Key)
 		out[string(bytes.Clone(innerKey))] = bytes.Clone(ld.GetValue())
 
 	default:

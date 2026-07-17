@@ -9,8 +9,8 @@ import (
 	"time"
 
 	abci "github.com/sei-protocol/sei-chain/sei-tendermint/abci/types"
+	atypes "github.com/sei-protocol/sei-chain/sei-tendermint/autobahn/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/config"
-	atypes "github.com/sei-protocol/sei-chain/sei-tendermint/internal/autobahn/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/eventbus"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/p2p"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/p2p/pex"
@@ -51,7 +51,6 @@ func makeSeedNode(
 	dbProvider config.DBProvider,
 	nodeKey types.NodeKey,
 	genesisDocProvider genesisDocProvider,
-	nodeMetrics *NodeMetrics,
 ) (_ local.NodeService, err error) {
 	closers := []closer{}
 	defer func() {
@@ -79,7 +78,6 @@ func makeSeedNode(
 	}
 
 	router, peerCloser, err := createRouter(
-		nodeMetrics.p2p,
 		func() *types.NodeInfo { return &nodeInfo },
 		nodeKey,
 		utils.None[atypes.SecretKey](),
@@ -121,7 +119,7 @@ func makeSeedNode(
 
 		pexReactor: pexReactor,
 		rpcEnv: &rpccore.Environment{
-			App: proxy.New(abci.BaseApplication{}, proxy.NopMetrics()),
+			App: proxy.New(abci.BaseApplication{}),
 
 			StateStore: stateStore,
 			BlockStore: blockStore,

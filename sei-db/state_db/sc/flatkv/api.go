@@ -7,6 +7,7 @@ import (
 
 	"github.com/sei-protocol/sei-chain/sei-db/common/metrics"
 	"github.com/sei-protocol/sei-chain/sei-db/proto"
+	"github.com/sei-protocol/sei-chain/sei-db/state_db/sc/hashlog"
 	"github.com/sei-protocol/sei-chain/sei-db/state_db/sc/types"
 )
 
@@ -29,7 +30,7 @@ type Store interface {
 	LoadVersion(targetVersion int64, readOnly bool) (Store, error)
 
 	// ApplyChangeSets buffers EVM changesets (x/evm memiavl keys) and updates LtHash.
-	// Non-EVM modules are routed into legacy storage under their module prefix.
+	// Non-EVM modules are routed into misc storage under their module prefix.
 	// Call Commit to persist.
 	ApplyChangeSets(cs []*proto.NamedChangeSet) error
 
@@ -42,15 +43,23 @@ type Store interface {
 	// a read-only store, on a non-fresh store, or for initialVersion <= 0.
 	SetInitialVersion(initialVersion int64) error
 
+	// EarliestVersion returns the version this store's history begins at
+	// (the seeded version recorded by SetInitialVersion), or 0 when
+	// unknown (genesis stores, and stores created before the record
+	// existed). A non-zero result means versions below it predate the
+	// store entirely — the chain ran without flatkv — as opposed to
+	// pruned or corrupt in-history versions, which still fail to load.
+	EarliestVersion() int64
+
 	// Get returns the value for a key within the given module.
 	// For EVM keys (moduleName == "evm"), the key is a memiavl EVM key
-	// routed to account/storage/code/legacy DBs internally.
-	// For non-EVM modules, the key is read from legacy storage with the module prefix.
+	// routed to account/storage/code/misc DBs internally.
+	// For non-EVM modules, the key is read from misc storage with the module prefix.
 	// If not found, returns (nil, false).
 	Get(moduleName string, key []byte) (value []byte, found bool)
 
 	// GetBlockHeightModified returns the block height at which the key was last modified.
-	// Only supported for EVM keys; non-EVM legacy data does not track block height.
+	// Only supported for EVM keys; non-EVM misc data does not track block height.
 	// If not found, returns (-1, false, nil).
 	GetBlockHeightModified(moduleName string, key []byte) (int64, bool, error)
 
@@ -98,6 +107,13 @@ type Store interface {
 
 	// CommittedRootHash returns the 32-byte checksum of the last committed LtHash.
 	CommittedRootHash() []byte
+
+	// HashCategories returns the hash logger category names this store reports (the global root plus one
+	// per data DB). The set is fixed. The caller registers these on the logger.
+	HashCategories() []string
+
+	// RecordHashes reports this store's hashes (root + per-DB) for blockNumber. Call right after Commit.
+	RecordHashes(hl hashlog.HashLogger, blockNumber uint64) error
 
 	// Version returns the latest committed version.
 	Version() int64

@@ -30,6 +30,7 @@ import (
 	receipt "github.com/sei-protocol/sei-chain/sei-db/ledger_db/receipt"
 	abci "github.com/sei-protocol/sei-chain/sei-tendermint/abci/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/bytes"
+	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils"
 	tenderminttypes "github.com/sei-protocol/sei-chain/sei-tendermint/proto/tendermint/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/rpc/client/mock"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/rpc/coretypes"
@@ -52,6 +53,7 @@ func primeReceiptStore(t *testing.T, store receipt.ReceiptStore, latest int64) {
 	}
 	require.NoError(t, store.SetLatestVersion(latest))
 	require.NoError(t, store.SetEarliestVersion(1))
+	require.Equal(t, int64(1), store.EarliestVersion())
 }
 
 // bcAlwaysFailClient fails every Block call (header resolution uses a single block fetch).
@@ -208,6 +210,62 @@ func TestEstimateGasAfterCalls(t *testing.T) {
 	Ctx = Ctx.WithBlockHeight(8)
 }
 
+func TestEstimateGasAfterCallsMaxCalls(t *testing.T) {
+	testCtx := Ctx.WithBlockHeight(1)
+	ctxProvider := func(height int64) sdk.Context {
+		if height == evmrpc.LatestCtxHeight {
+			return testCtx.WithIsTracing(true)
+		}
+		return testCtx.WithBlockHeight(height).WithIsTracing(true)
+	}
+
+	const maxCalls = 2
+	config := &evmrpc.SimulateConfig{
+		GasCap:              1000000,
+		EVMTimeout:          5 * time.Second,
+		MaxEstimateGasCalls: maxCalls,
+	}
+
+	testApp := testkeeper.TestApp(t)
+	watermarks := evmrpc.NewWatermarkManager(&MockClient{}, ctxProvider, nil, EVMKeeper.ReceiptStore())
+	simAPI := evmrpc.NewSimulationAPI(
+		ctxProvider,
+		EVMKeeper,
+		legacyabci.BeginBlockKeepers{},
+		func(int64) client.TxConfig { return TxConfig },
+		&MockClient{},
+		config,
+		testApp.BaseApp,
+		testApp.TracerAnteHandler,
+		evmrpc.ConnectionTypeHTTP,
+		evmrpc.NewBlockCache(3000),
+		&sync.Mutex{},
+		watermarks,
+	)
+
+	_, from := testkeeper.MockAddressPair()
+	_, to := testkeeper.MockAddressPair()
+	args := export.TransactionArgs{From: &from, To: &to}
+	call := export.TransactionArgs{From: &from, To: &to}
+
+	// Over the cap: rejected early with the "too many calls" error.
+	oversized := make([]export.TransactionArgs, maxCalls+1)
+	for i := range oversized {
+		oversized[i] = call
+	}
+	_, err := simAPI.EstimateGasAfterCalls(t.Context(), args, oversized, nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "too many calls")
+
+	// At the cap: the size guard is passed.
+	atCap := make([]export.TransactionArgs, maxCalls)
+	for i := range atCap {
+		atCap[i] = call
+	}
+	_, err = simAPI.EstimateGasAfterCalls(t.Context(), args, atCap, nil, nil)
+	require.Nil(t, err)
+}
+
 func TestCreateAccessList(t *testing.T) {
 	Ctx = Ctx.WithBlockHeight(1)
 
@@ -269,6 +327,31 @@ func TestCall(t *testing.T) {
 	resObj := sendRequestGood(t, "call", txArgs, nil, map[string]any{}, map[string]any{})
 	result := resObj["result"].(string)
 	require.Equal(t, "0x608060405234801561000f575f80fd5b506004361061003f575f3560e01c806360fe47b1146100435780636d4ce63c1461005f5780639c3674fc1461007d575b5f80fd5b61005d6004803603810190610058919061010a565b610087565b005b6100676100c7565b6040516100749190610144565b60405180910390f35b6100856100cf565b005b805f819055507f0de2d86113046b9e8bb6b785e96a6228f6803952bf53a40b68a36dce316218c1816040516100bc9190610144565b60405180910390a150565b5f8054905090565b5f80fd5b5f80fd5b5f819050919050565b6100e9816100d7565b81146100f3575f80fd5b50565b5f81359050610104816100e0565b92915050565b5f6020828403121561011f5761011e6100d3565b5b5f61012c848285016100f6565b91505092915050565b61013e816100d7565b82525050565b5f6020820190506101575f830184610135565b9291505056fea2646970667358221220bb55137839ea2afda11ab2d30ad07fee30bb9438caaa46e30ccd1053ed72439064736f6c63430008150033", result)
+
+	Ctx = Ctx.WithBlockHeight(8)
+}
+
+func TestCallStateOverrideTooManySlots(t *testing.T) {
+	Ctx = Ctx.WithBlockHeight(1)
+	_, from := testkeeper.MockAddressPair()
+	_, to := testkeeper.MockAddressPair()
+	txArgs := map[string]any{
+		"from":    from.Hex(),
+		"to":      to.Hex(),
+		"value":   "0x0",
+		"nonce":   "0x2",
+		"chainId": fmt.Sprintf("%#x", EVMKeeper.ChainID(Ctx)),
+	}
+
+	slots := map[string]any{}
+	for i := 0; i <= SConfig.MaxStateOverrideSlots; i++ {
+		slots[common.BigToHash(big.NewInt(int64(i))).Hex()] = common.Hash{}.Hex()
+	}
+	overrides := map[string]map[string]any{to.Hex(): {"state": slots}}
+
+	resObj := sendRequestGood(t, "call", txArgs, "latest", overrides)
+	errMap := resObj["error"].(map[string]any)
+	require.Contains(t, errMap["message"].(string), "too many slots")
 
 	Ctx = Ctx.WithBlockHeight(8)
 }
@@ -662,6 +745,48 @@ func TestSimulationAPIRequestLimiter(t *testing.T) {
 		t.Logf("eth_estimateGas rate limiting: %d successful, %d rejected out of %d total", successCount, rejectedCount, numRequests)
 	})
 
+	t.Run("TestCreateAccessListRateLimiting", func(t *testing.T) {
+		tEnv := newTestEnv(t)
+		// Test eth_createAccessList rate limiting
+		numRequests := 8
+		results := make(chan error, numRequests)
+
+		// Start all requests concurrently
+		for i := 0; i < numRequests; i++ {
+			go func() {
+				_, err := tEnv.simAPI.CreateAccessList(t.Context(), tEnv.args, nil)
+				results <- err
+			}()
+		}
+
+		// Collect all results
+		var errors []error
+		for i := 0; i < numRequests; i++ {
+			errors = append(errors, <-results)
+		}
+
+		// Count successful vs rejected requests
+		successCount := 0
+		rejectedCount := 0
+		for _, err := range errors {
+			if err == nil {
+				successCount++
+			} else if strings.Contains(err.Error(), "eth_createAccessList rejected due to rate limit: server busy") {
+				rejectedCount++
+			} else {
+				t.Logf("Unexpected createAccessList error: %v", err)
+			}
+		}
+
+		// Under constrained scheduling these requests can serialize and avoid
+		// rejections. The stable invariant is that every response is either success or
+		// rate-limited.
+		require.Greater(t, successCount, 0, "Should have at least one successful createAccessList request")
+		require.Equal(t, numRequests, successCount+rejectedCount, "All createAccessList requests should be accounted for")
+
+		t.Logf("eth_createAccessList rate limiting: %d successful, %d rejected out of %d total", successCount, rejectedCount, numRequests)
+	})
+
 	t.Run("TestEstimateGasAfterCallsRateLimiting", func(t *testing.T) {
 		tEnv := newTestEnv(t)
 		// Test eth_estimateGasAfterCalls rate limiting
@@ -881,8 +1006,8 @@ func (c *fixedBlockClient) EvmTxByHash(common.Hash) (tmtypes.Tx, bool) {
 	return nil, false
 }
 
-func (c *fixedBlockClient) EvmProxy(common.Address) (*url.URL, bool) {
-	return nil, false
+func (c *fixedBlockClient) EvmProxy(common.Address) utils.Option[*url.URL] {
+	return utils.None[*url.URL]()
 }
 
 func (c *fixedBlockClient) Block(_ context.Context, _ *int64) (*coretypes.ResultBlock, error) {

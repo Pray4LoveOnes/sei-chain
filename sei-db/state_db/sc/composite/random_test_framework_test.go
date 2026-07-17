@@ -29,6 +29,7 @@ import (
 	"github.com/sei-protocol/sei-chain/sei-db/state_db/sc/flatkv/ktype"
 	"github.com/sei-protocol/sei-chain/sei-db/state_db/sc/flatkv/vtype"
 	"github.com/sei-protocol/sei-chain/sei-db/state_db/sc/migration"
+	"github.com/sei-protocol/sei-chain/sei-db/state_db/sc/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -332,7 +333,7 @@ func freshEVMValue(rng *testutil.TestRandom, key []byte) []byte {
 		return randomCodeValue(rng)
 	case keys.EVMKeyStorage:
 		return randomStorageValue(rng)
-	default: // EVMKeyLegacy
+	default: // EVMKeyMisc
 		return randomLegacyValue(rng)
 	}
 }
@@ -695,27 +696,27 @@ const (
 // steadyStatePlacement returns the per-store backend expectation for a
 // steady-state (non-migrating) write mode. Panics for migration modes, whose
 // placement is in-flight and must be verified differently.
-func steadyStatePlacement(mode config.WriteMode) func(store string) backendPlacement {
+func steadyStatePlacement(mode types.WriteMode) func(store string) backendPlacement {
 	switch mode {
-	case config.MemiavlOnly:
+	case types.MemiavlOnly:
 		return func(string) backendPlacement { return inMemiavlOnly }
-	case config.FlatKVOnly:
+	case types.FlatKVOnly:
 		return func(string) backendPlacement { return inFlatKVOnly }
-	case config.EVMMigrated:
+	case types.EVMMigrated:
 		return func(store string) backendPlacement {
 			if store == keys.EVMStoreKey {
 				return inFlatKVOnly
 			}
 			return inMemiavlOnly
 		}
-	case config.AllMigratedButBank:
+	case types.AllMigratedButBank:
 		return func(store string) backendPlacement {
 			if store == keys.BankStoreKey {
 				return inMemiavlOnly
 			}
 			return inFlatKVOnly
 		}
-	case config.TestOnlyDualWrite:
+	case types.TestOnlyDualWrite:
 		return func(store string) backendPlacement {
 			if store == keys.EVMStoreKey {
 				return inBoth
@@ -1056,7 +1057,7 @@ func oracleToFlatKVRows(
 				getAcct(string(stripped)).nonce = binary.BigEndian.Uint64(v)
 			case keys.EVMKeyCodeHash:
 				copy(getAcct(string(stripped)).codeHash[:], v)
-			default: // EVMKeyLegacy: identity-mapped under the "evm/" prefix
+			default: // EVMKeyMisc: identity-mapped under the "evm/" prefix
 				rows[string(ktype.ModulePhysicalKey(keys.EVMStoreKey, []byte(k)))] =
 					flatKVExpectedRow{kind: rowLegacy, legacyValue: append([]byte(nil), v...)}
 			}
@@ -1137,7 +1138,7 @@ func assertFlatKVRowMatches(t *testing.T, physKey, rawVal []byte, exp flatKVExpe
 		require.Equal(t, zeroBalance[:], ad.GetBalance()[:],
 			"account balance must be zero (balances are not stored in flatkv yet) for %x", physKey)
 	case rowLegacy:
-		ld, err := vtype.DeserializeLegacyData(rawVal)
+		ld, err := vtype.DeserializeMiscData(rawVal)
 		require.NoError(t, err, "decode legacy row %x", physKey)
 		require.True(t, valuesEqual(exp.legacyValue, ld.GetValue()), "legacy value mismatch for %x", physKey)
 	}
@@ -1458,7 +1459,7 @@ outer:
 // -- every snapshot is retained for the (short) duration of a test by setting
 // SnapshotKeepRecent very high. Without that, pruning could remove the base
 // snapshot/WAL a past version needs and a non-1 interval would be unsafe.
-func randomTestConfig(t *testing.T, rng *testutil.TestRandom, mode config.WriteMode) config.StateCommitConfig {
+func randomTestConfig(t *testing.T, rng *testutil.TestRandom, mode types.WriteMode) config.StateCommitConfig {
 	t.Helper()
 	cfg := config.DefaultStateCommitConfig()
 	cfg.WriteMode = mode
@@ -1482,6 +1483,24 @@ func randomTestConfig(t *testing.T, rng *testutil.TestRandom, mode config.WriteM
 
 // openComposite constructs, initializes (with the full canonical store set),
 // and loads a composite store at the latest version, registering cleanup.
+// testMigrationBatchSize is the per-block migration rate the framework
+// re-applies on every store open. The rate is no longer a persisted config;
+// production re-reads the governance-controlled migration.NumKeysToMigratePerBlock
+// param in BeginBlock and re-applies it after every restart, so the framework
+// mirrors that by re-applying it whenever a store is (re)opened (open / restart
+// / state-sync clone). 0 leaves the migration paused, which is correct for the
+// steady-state scenarios; migration scenarios set it for their duration.
+var testMigrationBatchSize int
+
+// applyTestMigrationBatchSize re-applies testMigrationBatchSize to a freshly
+// opened store, mimicking the app's BeginBlock push of the gov param.
+func applyTestMigrationBatchSize(t *testing.T, cs *CompositeCommitStore) {
+	t.Helper()
+	if testMigrationBatchSize > 0 {
+		require.NoError(t, cs.SetMigrationBatchSize(testMigrationBatchSize))
+	}
+}
+
 func openComposite(t *testing.T, dir string, cfg config.StateCommitConfig) *CompositeCommitStore {
 	t.Helper()
 	cs, err := NewCompositeCommitStore(t.Context(), dir, cfg)
@@ -1489,6 +1508,7 @@ func openComposite(t *testing.T, dir string, cfg config.StateCommitConfig) *Comp
 	require.NoError(t, cs.Initialize(keys.MemIAVLStoreKeys))
 	_, err = cs.LoadVersion(0, false)
 	require.NoError(t, err)
+	applyTestMigrationBatchSize(t, cs)
 	t.Cleanup(func() { _ = cs.Close() })
 	return cs
 }
@@ -1547,6 +1567,7 @@ func stateSyncClone(
 
 	_, err = dst.LoadVersion(version, false)
 	require.NoError(t, err)
+	applyTestMigrationBatchSize(t, dst)
 	t.Cleanup(func() { _ = dst.Close() })
 
 	// State sync must reproduce identical committed state. When the source is

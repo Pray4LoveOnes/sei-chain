@@ -13,9 +13,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 	abci "github.com/sei-protocol/sei-chain/sei-tendermint/abci/types"
+	"github.com/sei-protocol/sei-chain/sei-tendermint/autobahn/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/autobahn/consensus"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/autobahn/data"
-	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/autobahn/types"
+	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/autobahn/epoch"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/internal/proxy"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils/require"
@@ -113,8 +114,11 @@ func (a *testApp) Cfg() *Config {
 		MaxGasEstimatedPerBlock: 1000000,
 		MaxTxsPerBlock:          types.MaxTxsPerBlock,
 		BlockInterval:           time.Hour,
-		App:                     proxy.New(a, proxy.NopMetrics()),
 	}
+}
+
+func (a *testApp) Proxy() *proxy.Proxy {
+	return proxy.New(a)
 }
 
 func (a *testApp) EvmNonce(addr common.Address) uint64 {
@@ -165,6 +169,7 @@ type testEnv struct {
 	state     *State
 	consensus *consensus.State
 	data      *data.State
+	app       *proxy.Proxy
 
 	inner utils.Mutex[*testEnvInner]
 }
@@ -177,7 +182,8 @@ func (env *testEnv) Run(ctx context.Context) error {
 		s.Spawn(func() error { return env.state.Run(ctx) })
 		// Process blocks.
 		stats := blockStats{}
-		for i := env.data.Committee().FirstBlock(); ; i += 1 {
+		firstBlock := env.data.Registry().FirstBlock()
+		for i := firstBlock; ; i += 1 {
 			// Wait for the next block to be finalized.
 			b, err := env.data.GlobalBlock(ctx, i)
 			if err != nil {
@@ -185,7 +191,7 @@ func (env *testEnv) Run(ctx context.Context) error {
 			}
 
 			// Check that adding first transaction to the previous block would exceed the limit.
-			if i > env.data.Committee().FirstBlock() {
+			if i > firstBlock {
 				tx, err := decodeTxSpec(b.Payload.Txs()[0])
 				if err != nil {
 					return fmt.Errorf("decodeTxSpec(): %w", err)
@@ -212,7 +218,7 @@ func (env *testEnv) Run(ctx context.Context) error {
 
 			// Mark block as executed.
 			h := b.Header.Hash()
-			resp, err := env.state.cfg.App.FinalizeBlock(ctx, &abci.RequestFinalizeBlock{Txs: b.Payload.Txs(), Hash: h[:]})
+			resp, err := env.app.FinalizeBlock(ctx, &abci.RequestFinalizeBlock{Txs: b.Payload.Txs(), Hash: h[:]})
 			if err != nil {
 				return fmt.Errorf("app.FinalizeBlock(): %w", err)
 			}
@@ -223,11 +229,11 @@ func (env *testEnv) Run(ctx context.Context) error {
 	}))
 }
 
-func newTestEnv(rng utils.Rng, cfg *Config) *testEnv {
-	committee, keys := types.GenCommittee(rng, 1)
+func newTestEnv(rng utils.Rng, cfg *Config, app *proxy.Proxy) *testEnv {
+	registry, keys := epoch.GenRegistry(rng, 1)
 	dataState := utils.OrPanic1(data.NewState(
-		&data.Config{Committee: committee},
-		utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee)),
+		&data.Config{Registry: registry},
+		utils.OrPanic1(data.NewDataWAL(utils.None[string](), registry.FirstBlock())),
 	))
 	consensusState := utils.OrPanic1(consensus.NewState(&consensus.Config{
 		Key:                keys[0],
@@ -237,7 +243,8 @@ func newTestEnv(rng utils.Rng, cfg *Config) *testEnv {
 	return &testEnv{
 		data:      dataState,
 		consensus: consensusState,
-		state:     NewState(cfg, consensusState),
+		state:     NewState(cfg, consensusState, app),
+		app:       app,
 		inner: utils.NewMutex(&testEnvInner{
 			sequenced: map[common.Address][]*txSpec{},
 		}),
@@ -248,7 +255,7 @@ func TestInsertTx_TooLargeTx(t *testing.T) {
 	ctx := t.Context()
 	rng := utils.TestRng()
 	app := newTestApp()
-	env := newTestEnv(rng, app.Cfg())
+	env := newTestEnv(rng, app.Cfg(), app.Proxy())
 	// Tx with size exceeding block limit.
 	tx := utils.GenBytes(rng, int(types.MaxTxsBytesPerBlock+1))
 	// Should be rejected by mempool.
@@ -262,7 +269,7 @@ func TestInsertTx_GasWantedExceeded(t *testing.T) {
 	rng := utils.TestRng()
 	app := newTestApp()
 	cfg := app.Cfg()
-	env := newTestEnv(rng, cfg)
+	env := newTestEnv(rng, cfg, app.Proxy())
 	// Tx with gas wanted exceeding block limit
 	addr, nonce := app.NewAccount(rng)
 	tx := env.genTx(rng, addr, nonce)
@@ -280,7 +287,7 @@ func TestInsertTx_GasEstimatedExceeded(t *testing.T) {
 	cfg := app.Cfg()
 	cfg.MaxGasEstimatedPerBlock = 10000
 	cfg.MaxGasWantedPerBlock = cfg.MaxGasEstimatedPerBlock * 2
-	env := newTestEnv(rng, cfg)
+	env := newTestEnv(rng, cfg, app.Proxy())
 	// Tx with gas wanted exceeding block limit
 	addr, nonce := app.NewAccount(rng)
 	tx := env.genTx(rng, addr, nonce)
@@ -296,7 +303,7 @@ func TestInsertTx_AppRejectsTx(t *testing.T) {
 	ctx := t.Context()
 	rng := utils.TestRng()
 	app := newTestApp()
-	env := newTestEnv(rng, app.Cfg())
+	env := newTestEnv(rng, app.Cfg(), app.Proxy())
 	// Construct tx with invalid encoding.
 	tx := utils.GenBytes(rng, 1)
 	_, err := decodeTxSpec(tx)
@@ -312,7 +319,7 @@ func TestMempool_BadNonce(t *testing.T) {
 	ctx := t.Context()
 	rng := utils.TestRng()
 	app := newTestApp()
-	env := newTestEnv(rng, app.Cfg())
+	env := newTestEnv(rng, app.Cfg(), app.Proxy())
 	// Initialize nonce for random account.
 	addr := common.Address(utils.GenBytes(rng, len(common.Address{})))
 	nonce := uint64(rng.Intn(10000))
@@ -358,8 +365,7 @@ func TestMempool_HappyPath(t *testing.T) {
 	cfg.MaxTxsPerBlock = 20
 	cfg.MaxGasWantedPerBlock = 100
 	cfg.MaxGasEstimatedPerBlock = 100
-	cfg.App = proxy.New(app, proxy.NopMetrics())
-	env := newTestEnv(rng, cfg)
+	env := newTestEnv(rng, cfg, app.Proxy())
 	want := utils.NewMutex(map[common.Address][]*txSpec{})
 	require.NoError(t, scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
 		s.SpawnBgNamed("env", func() error { return env.Run(ctx) })
@@ -441,7 +447,7 @@ func TestMempool_EvmTxByHash(t *testing.T) {
 	app := newTestApp()
 	cfg := app.Cfg()
 	cfg.BlockInterval = time.Millisecond
-	env := newTestEnv(rng, cfg)
+	env := newTestEnv(rng, cfg, app.Proxy())
 	addr, nonce := app.NewAccount(rng)
 
 	txs := utils.Slice(

@@ -73,6 +73,7 @@ func NewEVMHTTPServer(
 		IdleTimeout:       config.IdleTimeout,
 	})
 	methodTimeout := tmutils.Some(httpServer.timeouts.WriteTimeout)
+	httpServer.SetMaxOpenConns(config.MaxOpenConnections)
 	if err := httpServer.SetListenAddr(LocalAddress, config.HTTPPort); err != nil {
 		return nil, err
 	}
@@ -80,6 +81,9 @@ func NewEVMHTTPServer(
 		GasCap:                       config.SimulationGasLimit,
 		EVMTimeout:                   config.SimulationEVMTimeout,
 		MaxConcurrentSimulationCalls: config.MaxConcurrentSimulationCalls,
+		MaxEstimateGasCalls:          config.MaxEstimateGasCalls,
+		MaxStateOverrideAccounts:     config.MaxStateOverrideAccounts,
+		MaxStateOverrideSlots:        config.MaxStateOverrideSlots,
 	}
 	watermarks := NewWatermarkManager(tmClient, ctxProvider, stateStore, k.ReceiptStore())
 
@@ -108,8 +112,6 @@ func NewEVMHTTPServer(
 	seiLegacyAllowlist := BuildSeiLegacyEnabledSet(config.EnabledLegacySeiApis)
 
 	seiTxAPI := NewSeiTransactionAPI(tmClient, k, ctxProvider, txConfigProvider, homeDir, ConnectionTypeHTTP, methodTimeout, isPanicOrSyntheticTxFunc, watermarks, globalBlockCache, cacheCreationMutex)
-	seiDebugAPI := NewSeiDebugAPI(tmClient, k, beginBlockKeepers, ctxProvider, txConfigProvider, simulateConfig, app, antehandler, ConnectionTypeHTTP, config, globalBlockCache, cacheCreationMutex, watermarks)
-	seiDebugAPI.backend.SetTraceContextProvider(traceCtxProvider)
 
 	// DB semaphore aligned with worker count
 	dbReadSemaphore := make(chan struct{}, workerCount)
@@ -209,10 +211,6 @@ func NewEVMHTTPServer(
 			Namespace: "debug",
 			Service:   debugAPI,
 		},
-		{
-			Namespace: "sei",
-			Service:   seiDebugAPI,
-		},
 	}
 	// Test API can only exist on non-live chain IDs.  These APIs instrument certain overrides.
 	if config.EnableTestAPI && !evmCfg.IsLiveChainID(ctx) {
@@ -225,12 +223,17 @@ func NewEVMHTTPServer(
 		logger.Info("Disabling Test EVM APIs", "liveChainID", evmCfg.IsLiveChainID(ctx), "enableTestAPI", config.EnableTestAPI)
 	}
 
-	if err := httpServer.EnableRPC(apis, HTTPConfig{
+	httpConfig := HTTPConfig{
 		CorsAllowedOrigins: strings.Split(config.CORSOrigins, ","),
 		Vhosts:             []string{"*"},
 		DenyList:           config.DenyList,
 		SeiLegacyAllowlist: seiLegacyAllowlist,
-	}); err != nil {
+	}
+	httpConfig.batchItemLimit = config.BatchRequestLimit
+	httpConfig.batchResponseSizeLimit = config.BatchResponseMaxSize
+	httpConfig.maxRequestBodyBytes = config.MaxRequestBodyBytes
+	httpConfig.maxConcurrentRequestBytes = config.MaxConcurrentRequestBytes
+	if err := httpServer.EnableRPC(apis, httpConfig); err != nil {
 		return nil, err
 	}
 
@@ -264,6 +267,7 @@ func NewEVMWebSocketServer(
 		IdleTimeout:       config.IdleTimeout,
 	})
 	methodTimeout := tmutils.Some(httpServer.timeouts.WriteTimeout)
+	httpServer.SetMaxOpenConns(config.MaxOpenConnections)
 	if err := httpServer.SetListenAddr(LocalAddress, config.WSPort); err != nil {
 		return nil, err
 	}
@@ -271,6 +275,9 @@ func NewEVMWebSocketServer(
 		GasCap:                       config.SimulationGasLimit,
 		EVMTimeout:                   config.SimulationEVMTimeout,
 		MaxConcurrentSimulationCalls: config.MaxConcurrentSimulationCalls,
+		MaxEstimateGasCalls:          config.MaxEstimateGasCalls,
+		MaxStateOverrideAccounts:     config.MaxStateOverrideAccounts,
+		MaxStateOverrideSlots:        config.MaxStateOverrideSlots,
 	}
 	watermarks := NewWatermarkManager(tmClient, ctxProvider, stateStore, k.ReceiptStore())
 	// DB semaphore aligned with worker count
@@ -323,7 +330,7 @@ func NewEVMWebSocketServer(
 				cacheCreationMutex: cacheCreationMutex,
 				globalLogSlicePool: globalLogSlicePool,
 				watermarks:         watermarks,
-			}, &SubscriptionConfig{subscriptionCapacity: 100, newHeadLimit: config.MaxSubscriptionsNewHead}, &FilterConfig{timeout: config.FilterTimeout, maxLog: config.MaxLogNoBlock, maxBlock: config.MaxBlocksForLog}, ConnectionTypeWS, blockHeaderNotifier),
+			}, &SubscriptionConfig{subscriptionCapacity: 100, newHeadLimit: config.MaxSubscriptionsNewHead, logLimit: config.MaxSubscriptionsLogs}, &FilterConfig{timeout: config.FilterTimeout, maxLog: config.MaxLogNoBlock, maxBlock: config.MaxBlocksForLog}, ConnectionTypeWS, blockHeaderNotifier),
 		},
 		{
 			Namespace: "web3",
@@ -333,6 +340,8 @@ func NewEVMWebSocketServer(
 
 	wsConfig := WsConfig{Origins: strings.Split(config.WSOrigins, ",")}
 	wsConfig.readLimit = DefaultWebsocketMaxMessageSize
+	wsConfig.batchItemLimit = config.BatchRequestLimit
+	wsConfig.batchResponseSizeLimit = config.BatchResponseMaxSize
 	if err := httpServer.EnableWS(apis, wsConfig); err != nil {
 		return nil, err
 	}
