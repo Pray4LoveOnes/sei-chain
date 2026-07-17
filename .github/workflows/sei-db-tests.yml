@@ -1,12 +1,13 @@
 name: Sei-DB
+
 on:
-  workflow_call:
-  pull_request:
-  merge_group:
+  workflow_call: {}
+  pull_request: {}
+  merge_group: {}
   push:
     branches:
       - main
-      - release/**
+      - 'release/**'
 
 concurrency:
   cancel-in-progress: true
